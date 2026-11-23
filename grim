@@ -1,0 +1,3296 @@
+-- Grimoires by PUN (Luau, client-side)
+-- Not run in-game. Values come from how_to_learn.lua (user dump, line numbers
+-- below refer to that file). Anything not in the dump stays nil = UNSET.
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local Workspace = game:GetService("Workspace")
+local CollectionService = game:GetService("CollectionService")
+local HttpService = game:GetService("HttpService")
+local TeleportService = game:GetService("TeleportService")
+local StarterGui = game:GetService("StarterGui")
+
+local LocalPlayer = Players.LocalPlayer
+local SCRIPT_NAME = "Grimoires by PUN"
+
+--------------------------------------------------------------------------
+-- Config: game-dependent values, each traced to the dump.
+-- Build: the dump has no Roblox client version hash -> nil (UNSET).
+--------------------------------------------------------------------------
+local Config = {
+    RobloxBuild = nil, -- UNSET
+
+    -- DUMP CombatClient `swing` (~lines 477098-477390): melee swing sends
+    -- Attack:FireServer() with NO arguments. Client guards copied here.
+    AttackRemote = "ReplicatedStorage.Rep_Core.Remotes.Combat.Attack",
+    AttackToolKinds = { Combat = true, Magic = true, SpiritPowers = true, PactPowers = true, Weapon = true },
+    ToolKindAttribute = "Kind",
+    InGameAttribute = "InGame",
+    CharacterStateAttribute = "State",
+    CharacterBlockingAttribute = "Blocking",
+
+    -- DUMP Config.Combat M1 (line 606673+): BoxSize (4, 3, 6), BoxOffset 3.5.
+    -- Server-side hit box, so reach is not raisable: it ends 3.5 + 6/2 = 6.5
+    -- studs ahead (assumes measured from the character root, unverified).
+    M1BoxOffset = 3.5,
+    M1BoxDepth = 6,
+
+    -- DUMP CombatClient ffTargets (~line 476745): mobs are Model children of
+    -- workspace.Npcs; skipped when tagged "Invulnerable" or OnlyForUserId is
+    -- another user.
+    MobFolder = "Workspace.Npcs",
+    MobSkipTag = "Invulnerable",
+    MobOwnerAttribute = "OnlyForUserId",
+    -- DUMP health bar builder (~line 25984): mob models carry MobLevel (number),
+    -- Boss (true for bosses) and DisplayName.
+    MobLevelAttribute = "MobLevel",
+    MobBossAttribute = "Boss",
+    MobDisplayAttribute = "DisplayName",
+    MobIdAttribute = "MobId", -- DUMP: read on mob models in several scripts
+    -- DUMP Telas.Stats (~line 122640): LocalPlayer attribute Level.
+    PlayerLevelAttribute = "Level",
+
+    -- DUMP QuestTracker (~line 426559+): player attributes describing the
+    -- tracked quest. QuestAreaPos / QuestAlvo may be Vector3 (typeof-checked).
+    QuestRemote = "ReplicatedStorage.Rep_Core.Events.Quests",
+    QuestAttributeId = "LastQuest",      -- DUMP QuestDisplay (~line 422872)
+    QuestAttributeReward = "QuestReward",
+    QuestCurrentAttribute = "CurrentQuest",
+    QuestStepTextAttribute = "QuestStepText",
+    QuestNameAttribute = "QuestName",
+    QuestProgressAttribute = "QuestMin",
+    QuestGoalAttribute = "QuestMax",
+    QuestAreaAttribute = "QuestAreaPos",
+    QuestTargetAttribute = "QuestAlvo",
+    -- DUMP Interacts (line 126524) and Progression (line 107339, function
+    -- MeetsLevelRequirement at 107703). openInteraction (line 126886) indexes
+    -- Interacts by the NPC model's Name, so the model Name is the key.
+    InteractsModule = "ReplicatedStorage.Rep_Core.Modules.Datas.Interacts",
+    ProgressionModule = "ReplicatedStorage.Rep_Core.Modules.Progression",
+    -- DUMP openInteraction (~line 126904 and ~127005): ActiveQuests is a JSON
+    -- array of tables with .Id (== QuestData.Quest); the client refuses a
+    -- quest when 4 are active.
+    ActiveQuestsAttribute = "ActiveQuests",
+    QuestDonePrefix = "QuestDone_",
+    MaxActiveQuests = 4,
+    -- NOT in the dump: the giver ProximityPrompt activation distance.
+    -- Uncalibrated stand-off from the NPC root, in studs.
+    GiverStandoffStuds = 4,
+
+    -- Remotes and modules for potions, shop, selling, codes and dungeons.
+    -- All paths and call shapes come from the dump (line numbers in comments).
+    InventoryRemote = "ReplicatedStorage.Rep_Core.Events.Inventory", -- 219821; ("use", slot) 208808; ("sell", slot, amount) 222410
+    ItemShopRemote = "ReplicatedStorage.Rep_Core.Events.ItemShop", -- FireServer(itemName) 126843
+    CodesRemote = "ReplicatedStorage.Rep_Core.Events.Codes", -- FireServer(code) 164028
+    DungeonJoinRemote = "ReplicatedStorage.Rep_Core.Events.DungeonJoin", -- FireServer("Play", mode, dungeonId) 138099
+    DungeonRemote = "ReplicatedStorage.Rep_Core.Events.Dungeon", -- FireServer("ReturnToMainGame") 67085
+    UtilsModule = "ReplicatedStorage.Rep_Core.Modules.Utils", -- fastDecode 227294
+    InventoryDataModule = "ReplicatedStorage.Rep_Core.Modules.Datas.Inventory", -- item data 127744
+    InventoryAttribute = "Inventory", -- JSON-like string on the player, decoded with Utils.fastDecode (208790)
+    YensAttribute = "Yens", -- 126845
+    CurrentManaAttribute = "CurrentMana", -- 55484 (player attribute)
+    MaxManaAttribute = "MaxMana", -- 43847 (player attribute)
+    PotionSellerKey = "Item Seller", -- Interacts key == NPC model Name (560060 and 126886)
+    -- Codes config (611618): group membership is checked on the client,
+    -- the server throttles wrong guesses. The valid code list is NOT in the dump.
+    CodesGroupId = 235974420,
+    CodesRequestGap = 0.5,
+    CodesWrongPerMinute = 10,
+    -- Dungeon ids and modes (136889 and 138099). Entry costs a dungeon key (136931).
+    DungeonIds = { "DiamondDungeon", "FireDungeon", "WaterDungeon" },
+    DungeonModes = { "Solo", "Party", "MatchMaking" },
+    -- Potion item names. Config.Items.Catalog (324938) uses the English name and says
+    -- "drink for 2 seconds, taking damage stops it"; Datas.Inventory (128000) has
+    -- legacy Portuguese keys. Either key counts as the same potion in the inventory.
+    Potions = {
+        Health = {
+            { label = "Health Potion (10%)", shop = "Health Potion", keys = { "Health Potion", "Po\195\167\195\163o de Vida" } },
+            { label = "Medium Health Potion (20%)", shop = "Medium Health Potion", keys = { "Medium Health Potion", "Po\195\167\195\163o de Vida M\195\169dia" } },
+            { label = "Greater Health Potion (30%)", shop = "Greater Health Potion", keys = { "Greater Health Potion", "Po\195\167\195\163o de Vida Maior" } },
+        },
+        Mana = {
+            { label = "Mana Potion (10%)", shop = "Mana Potion", keys = { "Mana Potion", "Po\195\167\195\163o de Mana" } },
+            { label = "Medium Mana Potion (20%)", shop = "Medium Mana Potion", keys = { "Medium Mana Potion", "Po\195\167\195\163o de Mana M\195\169dia" } },
+            { label = "Greater Mana Potion (30%)", shop = "Greater Mana Potion", keys = { "Greater Mana Potion", "Po\195\167\195\163o de Mana Maior" } },
+        },
+    },
+    -- Rarity names seen in the dump (Datas.Inventory). LIMITED, Unique and
+    -- Mythical are never sold by this script.
+    SellRarities = { "Common", "Uncommon", "Rare", "Epic", "Legendary", "Mythic" },
+
+    -- DUMP MapChestClient (~line 495731): server sets Taken = true on chest
+    -- Models in workspace.Npcs-sibling folder MapChests. DUMP Config.MapChests
+    -- (line 611637): prompt hold 0.5s, distance 10, OpenDelay 2.5s, respawn 60s.
+    MapChestFolder = "Workspace.MapChests",
+    MapChestTakenAttribute = "Taken",
+    ChestOpenDelaySeconds = 2.5,
+    -- DUMP BossChestClient (line 476000+): ProximityPrompt named "BossChest".
+    BossChestPromptName = "BossChest",
+
+    -- DUMP GrimoireSpinsV2 (~line 455285 and ~455560): derived, see notes.
+    SpinsRemote = "ReplicatedStorage.Rep_Core.Events.Spins",
+    GrimoireSpinsRemote = "ReplicatedStorage.Rep_Core.Events.GrimoireSpinsV2",
+    GachaConfig = "ReplicatedStorage.Rep_Core.Config.GrimoireGacha",
+    -- DUMP GrimoireStorageView (~line 458400) and attach (~line 457690).
+    GrimoireStorageUseAction = "GrimoireStorageUse",
+    GrimoireStorageSlots = 5, -- dump default `SlotCount or 5`, unverified for your save
+    -- DUMP GrimoireSpinsV2 buyWithYens (~line 456030).
+    YenPackButtonPrefix = "YenPack_",
+    YenPackAmountAttribute = "Amount",
+
+    -- DUMP Telas.Stats addPoints (~line 122000): Events.Stats:FireServer(statKey,
+    -- amount); points left are LocalPlayer attribute Points. Stat key strings
+    -- come from the attribute list at ~line 122631 (exact server keys unverified).
+    StatsRemote = "ReplicatedStorage.Rep_Core.Events.Stats",
+    PointsAttribute = "Points",
+    StatKeys = { "Strength", "Magic", "Defense", "Mana", "Agility" },
+
+    -- DUMP Cast:FireServer("Z", "Aim", ...) (~lines 14433, 107013) and "X"
+    -- (~line 190559) show skill keys Z and X. C and V are NOT in the dump.
+    -- The script presses these keys instead of replaying the cast protocol.
+    SkillKeys = { "Z", "X", "C", "V" },
+
+    -- NOT in the dump: an exp grant remote (exp is server-side).
+}
+
+--------------------------------------------------------------------------
+-- Adjustable values (uncalibrated for this game)
+--------------------------------------------------------------------------
+local Tune = {
+    WalkSpeed = 40,
+    AttackAnimSpeed = 1.5,
+    AimFovPixels = 180,
+    AimSmoothing = 0.25,
+    FarmRange = 300,
+    FarmStandoffStuds = 5,
+    FlySpeed = 90,
+    AttackIntervalSeconds = 0.4, -- dump M1 Interval
+    SkillIntervalSeconds = 3,
+    LevelMargin = 0,
+    FarmTickSeconds = 0.1,
+    QuestIntervalSeconds = 5,
+    ChestIntervalSeconds = 2,
+    ChestMaxTries = 3,
+    StatsIntervalSeconds = 2,
+    BlackScreenFps = 20,
+    MaxEspTargets = 150,
+    HpPercent = 50,              -- drink a health potion at or below this HP %
+    MpPercent = 40,              -- drink a mana potion at or below this mana %
+    PotionCooldownSeconds = 2.5, -- uncalibrated: the dump says a potion takes 2 s to drink
+    PotionBuyCount = 5,
+    DungeonIntervalSeconds = 15, -- uncalibrated: gap between Play requests
+}
+
+--------------------------------------------------------------------------
+-- State
+--------------------------------------------------------------------------
+local State = {
+    EspPlayers = false, EspNpcs = false, Speed = false, AttackAnim = false,
+    AimLock = false, RapidM1 = false,
+    AutoFarm = false, AutoSkills = false, AutoQuest = false, AutoChest = false,
+    AutoStats = false, PotionHp = false, PotionMp = false, AutoDungeon = false,
+    AntiAfk = true, Humanize = true, BlackScreen = false,
+}
+local Options = {
+    FarmMode = 1,   -- 1 by player level, 2 nearest, 3 follow quest
+    StatMode = 1,   -- 1..#StatKeys one stat, #StatKeys + 1 spread evenly
+    SkipBosses = true,
+    HpPotion = 1,   -- index into Config.Potions.Health
+    MpPotion = 1,   -- index into Config.Potions.Mana
+    BuyPotion = 1,  -- 1..3 health, 4..6 mana (potion shop)
+    SellMaxRarity = 2, -- index into Config.SellRarities
+    DungeonId = 1,
+    DungeonMode = 1,
+    CodesText = "",
+    SkillKeys = { Z = true, X = true, C = false, V = false },
+}
+local FarmModeNames = { "By my level", "Nearest", "Follow quest" }
+local Activity = { chestBusy = false, tripBusy = false }
+
+local connections = {}
+local alive = true
+local function track(conn)
+    table.insert(connections, conn)
+    return conn
+end
+
+local function jitter(seconds)
+    if State.Humanize then
+        return seconds * (0.85 + math.random() * 0.3)
+    end
+    return seconds
+end
+
+-- Activity log (newest last). Errors are mirrored in a second list for the
+-- Error panel. Log.onChange is set by the UI.
+local Log = { entries = {}, errors = {}, onChange = nil }
+local LOG_MAX = 200
+local function logEvent(level, text)
+    local entry = { time = os.date("%H:%M:%S"), level = level, text = tostring(text) }
+    table.insert(Log.entries, entry)
+    if #Log.entries > LOG_MAX then
+        table.remove(Log.entries, 1)
+    end
+    if level == "error" then
+        table.insert(Log.errors, entry)
+        if #Log.errors > LOG_MAX then
+            table.remove(Log.errors, 1)
+        end
+    end
+    if Log.onChange then
+        pcall(Log.onChange, entry)
+    end
+end
+
+local Prefs = { Notify = true }
+local function notify(title, text)
+    if not Prefs.Notify then
+        return
+    end
+    pcall(function()
+        StarterGui:SetCore("SendNotification", { Title = title, Text = text, Duration = 4 })
+    end)
+end
+
+-- Runs fn in its own thread; an error is logged and the loop restarts after 2 s.
+local function spawnGuarded(name, fn)
+    task.spawn(function()
+        while alive do
+            local ok, err = pcall(fn)
+            if ok or not alive then
+                break
+            end
+            logEvent("error", name .. ": " .. tostring(err))
+            task.wait(2)
+        end
+    end)
+end
+
+local statusLines, statusLabel = {}, nil
+local lastStatusShape = {}
+local function setStatus(key, text)
+    statusLines[key] = text
+    local shape = string.gsub(tostring(text), "%d+", "#")
+    if lastStatusShape[key] ~= shape then
+        lastStatusShape[key] = shape
+        logEvent("info", key .. ": " .. tostring(text))
+    end
+    if statusLabel then
+        local parts = {}
+        for _, k in ipairs({ "farm", "rapid", "skills", "chest", "quest", "stats", "potion", "dungeon", "shop", "sell", "codes" }) do
+            if statusLines[k] then
+                table.insert(parts, k .. ": " .. statusLines[k])
+            end
+        end
+        statusLabel.Text = table.concat(parts, "\n")
+    end
+end
+
+--------------------------------------------------------------------------
+-- Helpers
+--------------------------------------------------------------------------
+local function resolve(path)
+    if path == nil then
+        return nil, "unset"
+    end
+    local node = game
+    for part in string.gmatch(path, "[^%.]+") do
+        node = node:FindFirstChild(part)
+        if node == nil then
+            return nil, "not found: " .. path
+        end
+    end
+    return node, "ok"
+end
+
+local function fire(remote, ...)
+    if remote:IsA("RemoteEvent") then
+        remote:FireServer(...)
+        return true
+    elseif remote:IsA("RemoteFunction") then
+        local args = table.pack(...)
+        task.spawn(function()
+            pcall(remote.InvokeServer, remote, table.unpack(args, 1, args.n))
+        end)
+        return true
+    end
+    return false
+end
+
+local function getRoot(model)
+    return model:FindFirstChild("HumanoidRootPart") or model.PrimaryPart
+end
+
+local function isAlive(model)
+    local hum = model and model:FindFirstChildOfClass("Humanoid")
+    return hum ~= nil and hum.Health > 0 and model.Parent ~= nil
+end
+
+local function localChar()
+    local char = LocalPlayer.Character
+    if char and isAlive(char) and getRoot(char) then
+        return char, getRoot(char), char:FindFirstChildOfClass("Humanoid")
+    end
+    return nil
+end
+
+local function gateRemote(path, label)
+    local remote, status = resolve(path)
+    if remote == nil then
+        return nil, label .. " " .. status
+    end
+    return remote, nil
+end
+
+local function standoffStuds()
+    local maxReach = Config.M1BoxOffset + Config.M1BoxDepth / 2
+    return math.clamp(Tune.FarmStandoffStuds, 2, maxReach)
+end
+
+--------------------------------------------------------------------------
+-- Mover: smooth flight toward Mover.goal (a CFrame), no teleporting.
+-- Character parts are made non-colliding only while a goal is active.
+--------------------------------------------------------------------------
+local Mover = { goal = nil, noclip = {} }
+
+local function restoreCollision()
+    for part in pairs(Mover.noclip) do
+        if part.Parent then
+            part.CanCollide = true
+        end
+        Mover.noclip[part] = nil
+    end
+end
+
+track(RunService.Heartbeat:Connect(function(dt)
+    local goal = Mover.goal
+    local char, root = localChar()
+    if goal == nil or char == nil then
+        if next(Mover.noclip) ~= nil then
+            restoreCollision()
+        end
+        return
+    end
+    for _, part in ipairs(char:GetDescendants()) do
+        if part:IsA("BasePart") and part.CanCollide then
+            Mover.noclip[part] = true
+            part.CanCollide = false
+        end
+    end
+    local delta = goal.Position - root.Position
+    local dist = delta.Magnitude
+    local step = Tune.FlySpeed * dt
+    local newPos = goal.Position
+    if dist > step then
+        newPos = root.Position + delta.Unit * step
+    end
+    local flatLook = Vector3.new(goal.LookVector.X, 0, goal.LookVector.Z)
+    if flatLook.Magnitude < 0.001 then
+        flatLook = Vector3.new(root.CFrame.LookVector.X, 0, root.CFrame.LookVector.Z)
+    end
+    root.AssemblyLinearVelocity = Vector3.zero
+    root.AssemblyAngularVelocity = Vector3.zero
+    root.CFrame = CFrame.lookAt(newPos, newPos + flatLook)
+end))
+
+local liveNpcs, livePlayerChars, questAreaPosition, chooseMob, behindGoal
+do -- scope: keeps top-level locals under the 200 limit
+--------------------------------------------------------------------------
+-- Targets
+--------------------------------------------------------------------------
+function liveNpcs()
+    local list = {}
+    local folder = resolve(Config.MobFolder)
+    if not folder then return list end
+    for _, model in ipairs(folder:GetChildren()) do
+        if model:IsA("Model")
+            and not CollectionService:HasTag(model, Config.MobSkipTag)
+            and isAlive(model) and getRoot(model) then
+            local owner = model:GetAttribute(Config.MobOwnerAttribute)
+            if owner == nil or owner == LocalPlayer.UserId then
+                table.insert(list, model)
+            end
+        end
+    end
+    return list
+end
+
+function livePlayerChars()
+    local list = {}
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr ~= LocalPlayer and plr.Character and isAlive(plr.Character) and getRoot(plr.Character) then
+            table.insert(list, plr.Character)
+        end
+    end
+    return list
+end
+
+local function nearest(models, origin, maxRange)
+    local best, bestDist = nil, maxRange
+    for _, model in ipairs(models) do
+        local d = (getRoot(model).Position - origin).Magnitude
+        if d < bestDist then
+            best, bestDist = model, d
+        end
+    end
+    return best
+end
+
+local function mobName(model)
+    local display = model:GetAttribute(Config.MobDisplayAttribute)
+    return string.lower(tostring(display or model.Name))
+end
+
+local function questText()
+    local parts = {}
+    for _, attr in ipairs({ Config.QuestStepTextAttribute, Config.QuestNameAttribute, Config.QuestCurrentAttribute }) do
+        local value = LocalPlayer:GetAttribute(attr)
+        if type(value) == "string" and value ~= "" then
+            table.insert(parts, value)
+        end
+    end
+    return table.concat(parts, " ")
+end
+
+local function questDone()
+    local progress = tonumber(LocalPlayer:GetAttribute(Config.QuestProgressAttribute)) or 0
+    local goal = tonumber(LocalPlayer:GetAttribute(Config.QuestGoalAttribute)) or 0
+    return goal > 0 and progress >= goal
+end
+
+function questAreaPosition()
+    for _, attr in ipairs({ Config.QuestAreaAttribute, Config.QuestTargetAttribute }) do
+        local value = LocalPlayer:GetAttribute(attr)
+        if typeof(value) == "Vector3" then
+            return value
+        end
+    end
+    return nil
+end
+
+-- Returns (model or nil, note).
+function chooseMob(models, origin, maxRange)
+    local mode = Options.FarmMode
+    if mode == 2 then
+        return nearest(models, origin, maxRange), nil
+    end
+
+    if mode == 1 then
+        local myLevel = tonumber(LocalPlayer:GetAttribute(Config.PlayerLevelAttribute))
+        if myLevel == nil then
+            return nearest(models, origin, maxRange), "no " .. Config.PlayerLevelAttribute .. " attribute, using nearest"
+        end
+        local limit = myLevel + Tune.LevelMargin
+        local best, bestLevel, bestDist = nil, nil, math.huge
+        local anyLevel = false
+        for _, model in ipairs(models) do
+            local d = (getRoot(model).Position - origin).Magnitude
+            local level = tonumber(model:GetAttribute(Config.MobLevelAttribute))
+            if level ~= nil then
+                anyLevel = true
+            end
+            local bossBlocked = Options.SkipBosses and model:GetAttribute(Config.MobBossAttribute) == true
+            if d <= maxRange and level ~= nil and level <= limit and not bossBlocked then
+                if best == nil or level > bestLevel or (level == bestLevel and d < bestDist) then
+                    best, bestLevel, bestDist = model, level, d
+                end
+            end
+        end
+        if best then
+            return best, string.format("Lv.%d (you %d)", bestLevel, myLevel)
+        end
+        if not anyLevel and #models > 0 then
+            return nearest(models, origin, maxRange), "mobs have no " .. Config.MobLevelAttribute .. ", using nearest"
+        end
+        return nil, string.format("no mob at or below Lv.%d in range", limit)
+    end
+
+    local text = string.lower(questText())
+    if questDone() then
+        return nil, "quest objective complete (turn in or accept the next one)"
+    end
+    if text == "" then
+        return nil, "no quest text yet (accept a quest first)"
+    end
+    local matches = {}
+    for _, model in ipairs(models) do
+        local name = mobName(model)
+        local id = string.lower(tostring(model:GetAttribute(Config.MobIdAttribute) or ""))
+        if (#name >= 3 and string.find(text, name, 1, true))
+            or (#id >= 3 and string.find(text, id, 1, true)) then
+            table.insert(matches, model)
+        end
+    end
+    local pick = nearest(matches, origin, maxRange)
+    if pick then
+        return pick, "quest: " .. text
+    end
+    return nil, "no mob in range matches quest text: " .. text
+end
+
+function behindGoal(model)
+    local mRoot = getRoot(model)
+    local pos = (mRoot.CFrame * CFrame.new(0, 0, standoffStuds())).Position
+    return CFrame.lookAt(pos, Vector3.new(mRoot.Position.X, pos.Y, mRoot.Position.Z))
+end
+
+end -- scope
+local clearEsp
+do -- scope: keeps top-level locals under the 200 limit
+--------------------------------------------------------------------------
+-- ESP
+--------------------------------------------------------------------------
+local espGuis = {}
+
+function clearEsp()
+    for model, gui in pairs(espGuis) do
+        gui:Destroy()
+        espGuis[model] = nil
+    end
+end
+
+local function ensureEsp(model, tag, color, myPos)
+    local gui = espGuis[model]
+    if gui == nil or gui.Parent == nil then
+        local root = getRoot(model)
+        gui = Instance.new("BillboardGui")
+        gui.AlwaysOnTop = true
+        gui.Size = UDim2.fromOffset(160, 32)
+        gui.StudsOffset = Vector3.new(0, 3, 0)
+        gui.Adornee = root
+        local label = Instance.new("TextLabel")
+        label.Name = "L"
+        label.BackgroundTransparency = 1
+        label.Size = UDim2.fromScale(1, 1)
+        label.TextColor3 = color
+        label.TextStrokeTransparency = 0
+        label.TextScaled = true
+        label.Font = Enum.Font.GothamBold
+        label.Parent = gui
+        gui.Parent = root
+        espGuis[model] = gui
+    end
+    local hum = model:FindFirstChildOfClass("Humanoid")
+    local dist = myPos and (getRoot(model).Position - myPos).Magnitude or 0
+    gui.L.Text = string.format("%s [%d] %dm", tag, hum and math.floor(hum.Health) or 0, math.floor(dist))
+end
+
+spawnGuarded("esp", function()
+    while alive do
+        local seen = {}
+        local count = 0
+        local _, myRoot = localChar()
+        local myPos = myRoot and myRoot.Position or nil
+        if State.EspPlayers then
+            for _, char in ipairs(livePlayerChars()) do
+                if count < Tune.MaxEspTargets then
+                    ensureEsp(char, char.Name, Color3.fromRGB(80, 200, 255), myPos)
+                    seen[char] = true
+                    count = count + 1
+                end
+            end
+        end
+        if State.EspNpcs then
+            for _, model in ipairs(liveNpcs()) do
+                if count < Tune.MaxEspTargets then
+                    ensureEsp(model, model.Name, Color3.fromRGB(255, 120, 120), myPos)
+                    seen[model] = true
+                    count = count + 1
+                end
+            end
+        end
+        for model, gui in pairs(espGuis) do
+            if not seen[model] then
+                gui:Destroy()
+                espGuis[model] = nil
+            end
+        end
+        task.wait(0.25)
+    end
+end)
+
+end -- scope
+--------------------------------------------------------------------------
+-- Walk speed and attack animation speed
+--------------------------------------------------------------------------
+local originalWalkSpeed = nil
+track(RunService.Heartbeat:Connect(function()
+    local _, _, hum = localChar()
+    if not hum then return end
+    if State.Speed then
+        if originalWalkSpeed == nil then originalWalkSpeed = hum.WalkSpeed end
+        hum.WalkSpeed = Tune.WalkSpeed
+    elseif originalWalkSpeed ~= nil then
+        hum.WalkSpeed = originalWalkSpeed
+        originalWalkSpeed = nil
+    end
+    if State.AttackAnim then
+        local animator = hum:FindFirstChildOfClass("Animator")
+        if animator then
+            for _, animTrack in ipairs(animator:GetPlayingAnimationTracks()) do
+                if animTrack.Speed ~= Tune.AttackAnimSpeed then
+                    animTrack:AdjustSpeed(Tune.AttackAnimSpeed)
+                end
+            end
+        end
+    end
+end))
+
+--------------------------------------------------------------------------
+-- Aim lock: hold right mouse on PC; always active while ON on touch-only
+--------------------------------------------------------------------------
+local aimHeld = false
+local touchOnly = UserInputService.TouchEnabled and not UserInputService.MouseEnabled
+
+track(UserInputService.InputBegan:Connect(function(input, processed)
+    if not processed and input.UserInputType == Enum.UserInputType.MouseButton2 then
+        aimHeld = true
+    end
+end))
+track(UserInputService.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton2 then
+        aimHeld = false
+    end
+end))
+track(UserInputService.WindowFocusReleased:Connect(function() aimHeld = false end))
+
+local function pickAimTarget(camera)
+    local origin = touchOnly and (camera.ViewportSize / 2) or UserInputService:GetMouseLocation()
+    local pool = livePlayerChars()
+    for _, npc in ipairs(liveNpcs()) do table.insert(pool, npc) end
+    local best, bestDist = nil, Tune.AimFovPixels
+    for _, model in ipairs(pool) do
+        local part = model:FindFirstChild("Head") or getRoot(model)
+        local v, onScreen = camera:WorldToViewportPoint(part.Position)
+        if onScreen and v.Z > 0 then
+            local d = (Vector2.new(v.X, v.Y) - origin).Magnitude
+            if d < bestDist then best, bestDist = part, d end
+        end
+    end
+    return best
+end
+
+track(RunService.RenderStepped:Connect(function()
+    if not (State.AimLock and (touchOnly or aimHeld)) then return end
+    if UserInputService:GetFocusedTextBox() ~= nil then return end
+    local camera = Workspace.CurrentCamera
+    if not camera then return end
+    local part = pickAimTarget(camera)
+    if part and part.Parent then
+        local goal = CFrame.new(camera.CFrame.Position, part.Position)
+        camera.CFrame = camera.CFrame:Lerp(goal, Tune.AimSmoothing)
+    end
+end))
+
+local pickTool, VirtualInput, castSkills
+do -- scope: keeps top-level locals under the 200 limit
+--------------------------------------------------------------------------
+-- Tool selection, skills (key presses) and Auto farm
+--------------------------------------------------------------------------
+local function isAttackTool(tool)
+    return tool:IsA("Tool") and Config.AttackToolKinds[tool:GetAttribute(Config.ToolKindAttribute)] == true
+end
+
+function pickTool(char)
+    local held = char:FindFirstChildOfClass("Tool")
+    if held and isAttackTool(held) then
+        return held
+    end
+    local backpack = LocalPlayer:FindFirstChildOfClass("Backpack")
+    if backpack then
+        for _, tool in ipairs(backpack:GetChildren()) do
+            if isAttackTool(tool) then
+                return tool
+            end
+        end
+    end
+    return nil
+end
+
+VirtualInput = nil
+pcall(function() VirtualInput = game:GetService("VirtualInputManager") end)
+
+local function tapKey(keyName)
+    local code = Enum.KeyCode[keyName]
+    if VirtualInput == nil or code == nil then
+        return false
+    end
+    return pcall(function()
+        VirtualInput:SendKeyEvent(true, code, false, game)
+        task.wait(0.05)
+        VirtualInput:SendKeyEvent(false, code, false, game)
+    end)
+end
+
+local casting = false
+function castSkills()
+    if casting then return end
+    casting = true
+    task.spawn(function()
+        local pressed = {}
+        for _, key in ipairs(Config.SkillKeys) do
+            if Options.SkillKeys[key] then
+                if tapKey(key) then
+                    table.insert(pressed, key)
+                end
+                task.wait(0.2)
+            end
+        end
+        setStatus("skills", #pressed > 0 and ("pressed " .. table.concat(pressed, " ")) or "no skill key enabled")
+        casting = false
+    end)
+end
+
+end -- scope
+--------------------------------------------------------------------------
+-- Quest giver (used by "Follow quest" when no quest is active).
+-- Path copied from the dump: the quest dialogue's last Confirm sends
+-- Quests:FireServer("giveQuest", <NPC model Name>, nil) (DUMP ~line 127407).
+-- Whether the server accepts that without the dialogue is unverified, so the
+-- dialogue itself is the fallback (prompt, then Confirm presses).
+--------------------------------------------------------------------------
+local Giver = { interacts = nil, progression = nil, models = {}, blockedUntil = {}, lastTry = 0 }
+
+local function requireByPath(path)
+    local node = resolve(path)
+    if node and node:IsA("ModuleScript") then
+        local ok, result = pcall(require, node)
+        if ok and type(result) == "table" then
+            return result
+        end
+    end
+    return nil
+end
+
+-- Returns (set of active quest Ids, count). A missing attribute reads as an
+-- empty log, the same as the dump's own `or "[]"`.
+local function activeQuests()
+    local raw = LocalPlayer:GetAttribute(Config.ActiveQuestsAttribute) or "[]"
+    local ids, count = {}, 0
+    local ok, list = pcall(HttpService.JSONDecode, HttpService, raw)
+    if ok and type(list) == "table" then
+        for _, quest in ipairs(list) do
+            count = count + 1
+            if type(quest) == "table" and quest.Id ~= nil then
+                ids[tostring(quest.Id)] = true
+            end
+        end
+    end
+    return ids, count
+end
+
+local function questNeeded()
+    local _, count = activeQuests()
+    return count == 0
+end
+
+local function findGiverModel(key)
+    local cached = Giver.models[key]
+    if cached and cached.Parent and getRoot(cached) then
+        return cached
+    end
+    local found = Workspace:FindFirstChild(key, true)
+    if found and found:IsA("Model") and getRoot(found) then
+        Giver.models[key] = found
+        return found
+    end
+    return nil
+end
+
+-- Highest-requirement quest I can take now: not active, not blocked, level
+-- and Requires satisfied, free (not PaidQuest), PrimaryQuest, model present.
+local function pickGiver()
+    Giver.interacts = Giver.interacts or requireByPath(Config.InteractsModule)
+    Giver.progression = Giver.progression or requireByPath(Config.ProgressionModule)
+    if not Giver.interacts then
+        return nil, "Interacts module unavailable: " .. Config.InteractsModule
+    end
+    if not Giver.progression or type(Giver.progression.MeetsLevelRequirement) ~= "function" then
+        return nil, "Progression.MeetsLevelRequirement unavailable"
+    end
+    local active, count = activeQuests()
+    if count >= Config.MaxActiveQuests then
+        return nil, "quest log is full"
+    end
+    local best = nil
+    local givers, blocked, missingModel = 0, 0, 0
+    for key, data in pairs(Giver.interacts) do
+        local qd = type(data) == "table" and data.InteractType == "QuestGiver" and data.QuestData or nil
+        if type(qd) == "table" and type(qd.Quest) == "string" and not qd.PaidQuest
+            and qd.PrimaryQuest ~= false and not active[qd.Quest] then
+            local doneKey = Config.QuestDonePrefix .. qd.Quest
+            local requires = qd.Requires
+            local doneBlocks = qd.CanRepeat ~= true and LocalPlayer:GetAttribute(doneKey) == true
+            local requiresBlocks = type(requires) == "string" and requires ~= ""
+                and LocalPlayer:GetAttribute(Config.QuestDonePrefix .. requires) ~= true
+            local okLevel, meets = pcall(Giver.progression.MeetsLevelRequirement, LocalPlayer, qd.LvlReq)
+            if not doneBlocks and not requiresBlocks and okLevel and meets == true then
+                givers = givers + 1
+                if (Giver.blockedUntil[key] or 0) > os.clock() then
+                    blocked = blocked + 1
+                else
+                    local model = findGiverModel(key)
+                    if model == nil then
+                        missingModel = missingModel + 1
+                    else
+                        local req = tonumber(qd.LvlReq) or 0
+                        if best == nil or req > best.req or (req == best.req and key < best.key) then
+                            best = { key = key, quest = qd.Quest, req = req, model = model,
+                                name = tostring(data.DisplayName or key) }
+                        end
+                    end
+                end
+            end
+        end
+    end
+    if best then
+        return best, nil
+    end
+    return nil, string.format("no quest giver available (eligible %d, skipped %d, model not found %d)",
+        givers, blocked, missingModel)
+end
+
+local function findConfirmButton()
+    local playerGui = LocalPlayer:FindFirstChildOfClass("PlayerGui")
+    if not playerGui then return nil end
+    for _, inst in ipairs(playerGui:GetDescendants()) do
+        if inst.Name == "Confirm" and inst:IsA("GuiButton") then
+            local frame = inst.Parent
+            -- DUMP dialogue frame (~line 127506): children Confirm, Cancel, Desc.
+            if frame and frame:IsA("GuiObject") and frame.Visible
+                and frame:FindFirstChild("Cancel") and frame:FindFirstChild("Desc") then
+                return inst, frame:FindFirstChild("Cancel")
+            end
+        end
+    end
+    return nil
+end
+
+local function waitAccepted(quest, seconds)
+    local deadline = os.clock() + seconds
+    repeat
+        if activeQuests()[quest] then return true end
+        task.wait(0.15)
+    until os.clock() >= deadline or not alive
+    return activeQuests()[quest] == true
+end
+
+local function acceptViaDialogue(pick)
+    if type(fireproximityprompt) ~= "function" then
+        return false, "fireproximityprompt unavailable"
+    end
+    if type(firesignal) ~= "function" then
+        return false, "firesignal unavailable"
+    end
+    local prompt = nil
+    for _, d in ipairs(pick.model:GetDescendants()) do
+        if d:IsA("ProximityPrompt") then
+            prompt = d
+            break
+        end
+    end
+    if not prompt then
+        return false, "giver has no ProximityPrompt"
+    end
+    pcall(fireproximityprompt, prompt)
+    local deadline = os.clock() + 9
+    local presses = 0
+    while os.clock() < deadline and presses < 12 and alive do
+        local confirm = findConfirmButton()
+        if confirm then
+            pcall(firesignal, confirm.MouseButton1Click)
+            presses = presses + 1
+            task.wait(0.45)
+        else
+            task.wait(0.25)
+        end
+        if activeQuests()[pick.quest] then
+            return true
+        end
+    end
+    local _, cancel = findConfirmButton()
+    if cancel then
+        pcall(firesignal, cancel.MouseButton1Click)
+    end
+    return activeQuests()[pick.quest] == true, "dialogue did not accept"
+end
+
+-- One tick: fly to the giver, then accept. Returns the status text.
+local function questGiverStep(root)
+    local remote = resolve(Config.QuestRemote)
+    if remote == nil then
+        Mover.goal = nil
+        return "Quests remote not found: " .. tostring(Config.QuestRemote)
+    end
+    local pick, reason = pickGiver()
+    if not pick then
+        Mover.goal = nil
+        return reason
+    end
+    local npcRoot = getRoot(pick.model)
+    local flat = Vector3.new(root.Position.X - npcRoot.Position.X, 0, root.Position.Z - npcRoot.Position.Z)
+    flat = flat.Magnitude > 0.1 and flat.Unit or Vector3.new(0, 0, 1)
+    local stand = npcRoot.Position + flat * Config.GiverStandoffStuds
+    Mover.goal = CFrame.lookAt(stand, Vector3.new(npcRoot.Position.X, stand.Y, npcRoot.Position.Z))
+    local dist = (npcRoot.Position - root.Position).Magnitude
+    if dist > Config.GiverStandoffStuds + 2 then
+        return string.format("flying to quest giver %s (%d studs)", pick.name, math.floor(dist))
+    end
+    if os.clock() - Giver.lastTry < 2 then
+        return "at quest giver " .. pick.name
+    end
+    Giver.lastTry = os.clock()
+
+    fire(remote, "giveQuest", pick.key, nil)
+    if waitAccepted(pick.quest, 1.5) then
+        return "accepted quest " .. pick.quest .. " from " .. pick.name
+    end
+    local ok, why = acceptViaDialogue(pick)
+    if ok then
+        return "accepted quest " .. pick.quest .. " through the dialogue"
+    end
+    Giver.blockedUntil[pick.key] = os.clock() + 60
+    return string.format("%s did not accept %s (%s); skipping it for 60 s", pick.name, pick.quest, tostring(why))
+end
+
+spawnGuarded("farm", function()
+    local lastSwing, lastSkill = 0, 0
+    local current, lastMode = nil, Options.FarmMode
+    while alive do
+        if State.AutoFarm and not Activity.chestBusy and not Activity.tripBusy then
+            local char, root, hum = localChar()
+            local attack = resolve(Config.AttackRemote)
+            if Options.FarmMode ~= lastMode then
+                current, lastMode = nil, Options.FarmMode
+            end
+            if not char or not attack then
+                setStatus("farm", "waiting for character or Attack remote")
+            elseif LocalPlayer:GetAttribute(Config.InGameAttribute) ~= true then
+                Mover.goal = nil
+                setStatus("farm", "InGame is not true (finish spawn or menu first)")
+            elseif Options.FarmMode == 3 and questNeeded() then
+                current = nil
+                setStatus("farm", questGiverStep(root))
+            else
+                local tool = pickTool(char)
+                if not tool then
+                    Mover.goal = nil
+                    setStatus("farm", "no tool with a valid Kind attribute (equip a weapon or magic)")
+                else
+                    if tool.Parent ~= char then
+                        hum:EquipTool(tool)
+                        task.wait(0.2)
+                    end
+                    local note = nil
+                    if current == nil or not isAlive(current) or not getRoot(current)
+                        or (getRoot(current).Position - root.Position).Magnitude > Tune.FarmRange + 80 then
+                        current, note = chooseMob(liveNpcs(), root.Position, Tune.FarmRange)
+                    end
+                    if current then
+                        Mover.goal = behindGoal(current)
+                        local dist = (getRoot(current).Position - root.Position).Magnitude
+                        local state = char:GetAttribute(Config.CharacterStateAttribute)
+                        local canSwing = (State.RapidM1 or state == nil or state == "Idle")
+                            and char:GetAttribute(Config.CharacterBlockingAttribute) ~= true
+                        local now = os.clock()
+                        if dist <= Config.M1BoxOffset + Config.M1BoxDepth / 2 + 3 then
+                            if canSwing and now - lastSwing >= jitter(Tune.AttackIntervalSeconds) then
+                                fire(attack)
+                                lastSwing = now
+                            end
+                            if State.AutoSkills and now - lastSkill >= jitter(Tune.SkillIntervalSeconds) then
+                                lastSkill = now
+                                castSkills()
+                            end
+                            setStatus("farm", "hitting " .. current.Name .. (note and (" | " .. note) or ""))
+                        else
+                            setStatus("farm", string.format("flying to %s (%d studs)", current.Name, math.floor(dist)))
+                        end
+                    else
+                        local area = Options.FarmMode == 3 and questAreaPosition() or nil
+                        if area then
+                            Mover.goal = CFrame.new(area + Vector3.new(0, 6, 0))
+                            setStatus("farm", "flying to the quest area | " .. tostring(note))
+                        else
+                            Mover.goal = nil
+                            setStatus("farm", tostring(note or "no mob in range"))
+                        end
+                    end
+                end
+            end
+        elseif not Activity.chestBusy and not Activity.tripBusy then
+            Mover.goal = nil
+        end
+        task.wait(jitter(math.min(Tune.FarmTickSeconds, math.max(Tune.AttackIntervalSeconds, 0.03))))
+    end
+end)
+
+-- Rapid M1: swings by itself. Skipped while Auto farm is ON (the farm loop
+-- already swings). Ignores the character State guard, so the server may
+-- still reject swings that arrive too early.
+spawnGuarded("rapidM1", function()
+    while alive do
+        if State.RapidM1 and not State.AutoFarm then
+            local char, _, hum = localChar()
+            local attack = resolve(Config.AttackRemote)
+            if not char or not attack then
+                setStatus("rapid", "waiting for character or Attack remote")
+            elseif LocalPlayer:GetAttribute(Config.InGameAttribute) ~= true then
+                setStatus("rapid", "InGame is not true")
+            else
+                local tool = pickTool(char)
+                if not tool then
+                    setStatus("rapid", "no tool with a valid Kind attribute")
+                else
+                    if tool.Parent ~= char then
+                        hum:EquipTool(tool)
+                        task.wait(0.2)
+                    end
+                    if char:GetAttribute(Config.CharacterBlockingAttribute) ~= true then
+                        fire(attack)
+                        setStatus("rapid", string.format("swinging every %.2fs", Tune.AttackIntervalSeconds))
+                    end
+                end
+            end
+        end
+        task.wait(jitter(math.max(Tune.AttackIntervalSeconds, 0.03)))
+    end
+end)
+
+do -- scope: keeps top-level locals under the 200 limit
+--------------------------------------------------------------------------
+-- Auto quest, Auto stats
+--------------------------------------------------------------------------
+spawnGuarded("quest", function()
+    while alive do
+        if State.AutoQuest then
+            local remote = resolve(Config.QuestRemote)
+            local questId = LocalPlayer:GetAttribute(Config.QuestAttributeId)
+            if remote and questId ~= nil then
+                fire(remote, "giveQuest", questId, LocalPlayer:GetAttribute(Config.QuestAttributeReward))
+                setStatus("quest", "sent giveQuest " .. tostring(questId))
+            else
+                setStatus("quest", "no " .. Config.QuestAttributeId .. " offered yet")
+            end
+        end
+        task.wait(jitter(Tune.QuestIntervalSeconds))
+    end
+end)
+
+spawnGuarded("stats", function()
+    while alive do
+        if State.AutoStats then
+            local remote = resolve(Config.StatsRemote)
+            local points = math.floor(tonumber(LocalPlayer:GetAttribute(Config.PointsAttribute)) or 0)
+            if not remote then
+                setStatus("stats", "Stats remote not found")
+            elseif points < 1 then
+                setStatus("stats", "no stat points to spend")
+            elseif Options.StatMode <= #Config.StatKeys then
+                local key = Config.StatKeys[Options.StatMode]
+                fire(remote, key, points)
+                setStatus("stats", string.format("put %d into %s", points, key))
+            else
+                local n = #Config.StatKeys
+                local each = math.floor(points / n)
+                local rest = points - each * n
+                for i, key in ipairs(Config.StatKeys) do
+                    local amount = each + ((i <= rest) and 1 or 0)
+                    if amount > 0 then
+                        fire(remote, key, amount)
+                        task.wait(0.15)
+                    end
+                end
+                setStatus("stats", string.format("spread %d points evenly", points))
+            end
+        end
+        task.wait(jitter(Tune.StatsIntervalSeconds))
+    end
+end)
+
+end -- scope
+do -- scope: keeps top-level locals under the 200 limit
+--------------------------------------------------------------------------
+-- Auto chest: fly to the prompt, press it, then wait out the server's
+-- OpenDelay before leaving (leaving early was the likely reason it failed).
+--------------------------------------------------------------------------
+local bossPrompts = {}
+local function trackPrompt(inst)
+    if inst:IsA("ProximityPrompt") and inst.Name == Config.BossChestPromptName then
+        bossPrompts[inst] = true
+    end
+end
+for _, inst in ipairs(Workspace:GetDescendants()) do
+    trackPrompt(inst)
+end
+track(Workspace.DescendantAdded:Connect(trackPrompt))
+
+local function promptPosition(prompt)
+    local parent = prompt.Parent
+    if parent and parent:IsA("BasePart") then
+        return parent.Position
+    elseif parent and parent:IsA("Attachment") then
+        return parent.WorldPosition
+    elseif parent and parent:IsA("Model") then
+        return parent:GetPivot().Position
+    end
+    return nil
+end
+
+local function chestStopped()
+    return not (alive and State.AutoChest)
+end
+
+local function waitUntil(predicate, timeout)
+    local t0 = os.clock()
+    while os.clock() - t0 < timeout do
+        if chestStopped() or predicate() then
+            return predicate()
+        end
+        task.wait(0.05)
+    end
+    return predicate()
+end
+
+local function flyTo(cf, timeout)
+    Mover.goal = cf
+    return waitUntil(function()
+        local _, root = localChar()
+        return root ~= nil and (root.Position - cf.Position).Magnitude <= 1.5
+    end, timeout)
+end
+
+local function holdPrompt(prompt)
+    pcall(function()
+        prompt:InputHoldBegin()
+        task.wait(math.max(prompt.HoldDuration, 0) + 0.2)
+        prompt:InputHoldEnd()
+    end)
+end
+
+local function collectPrompt(prompt, isDone)
+    local pos = promptPosition(prompt)
+    if pos == nil or not prompt.Enabled then
+        return false, "prompt missing or disabled"
+    end
+    if not flyTo(CFrame.new(pos + Vector3.new(0, 3, 0)), 40) then
+        return false, "could not reach the chest"
+    end
+    task.wait(0.2)
+    if type(fireproximityprompt) == "function" then
+        pcall(fireproximityprompt, prompt)
+    end
+    if waitUntil(isDone, 1.0) then return true end
+    holdPrompt(prompt)
+    if waitUntil(isDone, Config.ChestOpenDelaySeconds + 2) then return true end
+    return false, "chest still closed after the open delay"
+end
+
+local chestFailures = {}
+
+spawnGuarded("chest", function()
+    while alive do
+        if State.AutoChest then
+            local opened, failed, lastReason = 0, 0, nil
+            local jobs = {}
+            local _, root = localChar()
+            local rootPos = root and root.Position or Vector3.zero
+            local folder = resolve(Config.MapChestFolder)
+            if root and folder then
+                for _, chest in ipairs(folder:GetChildren()) do
+                    local taken = chest:GetAttribute(Config.MapChestTakenAttribute) == true
+                    if not taken and (chestFailures[chest] or 0) < Tune.ChestMaxTries then
+                        local prompt = chest:FindFirstChildWhichIsA("ProximityPrompt", true)
+                        if prompt then
+                            table.insert(jobs, {
+                                key = chest, prompt = prompt,
+                                isDone = function()
+                                    return chest.Parent == nil
+                                        or chest:GetAttribute(Config.MapChestTakenAttribute) == true
+                                end,
+                            })
+                        else
+                            lastReason = "no ProximityPrompt under " .. chest.Name
+                        end
+                    end
+                end
+                for prompt in pairs(bossPrompts) do
+                    if prompt.Parent == nil then
+                        bossPrompts[prompt] = nil
+                    elseif prompt.Enabled and (chestFailures[prompt] or 0) < Tune.ChestMaxTries then
+                        table.insert(jobs, {
+                            key = prompt, prompt = prompt,
+                            isDone = function()
+                                return prompt.Parent == nil or not prompt.Enabled
+                            end,
+                        })
+                    end
+                end
+            end
+            table.sort(jobs, function(a, b)
+                local pa, pb = promptPosition(a.prompt), promptPosition(b.prompt)
+                local da = pa and (pa - rootPos).Magnitude or math.huge
+                local db = pb and (pb - rootPos).Magnitude or math.huge
+                return da < db
+            end)
+            if #jobs > 0 then
+                Activity.chestBusy = true
+            end
+            for _, job in ipairs(jobs) do
+                if chestStopped() then break end
+                local ok, reason = collectPrompt(job.prompt, job.isDone)
+                if ok then
+                    opened = opened + 1
+                    chestFailures[job.key] = nil
+                else
+                    failed = failed + 1
+                    chestFailures[job.key] = (chestFailures[job.key] or 0) + 1
+                    lastReason = reason
+                end
+            end
+            if Activity.chestBusy then
+                Activity.chestBusy = false
+                Mover.goal = nil
+            end
+            setStatus("chest", string.format("opened %d, failed %d%s", opened, failed,
+                lastReason and (" | " .. lastReason) or ""))
+        end
+        task.wait(jitter(Tune.ChestIntervalSeconds))
+    end
+end)
+
+end -- scope
+--------------------------------------------------------------------------
+-- Anti-AFK
+--------------------------------------------------------------------------
+local VirtualUser = nil
+pcall(function() VirtualUser = game:GetService("VirtualUser") end)
+
+track(LocalPlayer.Idled:Connect(function()
+    if not State.AntiAfk or VirtualUser == nil then return end
+    pcall(function()
+        VirtualUser:CaptureController()
+        VirtualUser:ClickButton2(Vector2.new())
+    end)
+end))
+
+local mountGui, blackGui, setBlackScreen
+do -- scope: keeps top-level locals under the 200 limit
+--------------------------------------------------------------------------
+-- Black screen mode: stops 3D rendering and covers the screen, caps FPS.
+--------------------------------------------------------------------------
+function mountGui(gui)
+    local mounted = false
+    if type(gethui) == "function" then
+        mounted = pcall(function() gui.Parent = gethui() end)
+    end
+    if not mounted then
+        gui.Parent = LocalPlayer:WaitForChild("PlayerGui")
+    end
+end
+
+blackGui = nil
+local originalFps = nil
+
+function setBlackScreen(on)
+    State.BlackScreen = on
+    if on then
+        if blackGui == nil then
+            blackGui = Instance.new("ScreenGui")
+            blackGui.Name = "PunBlackScreen"
+            blackGui.ResetOnSpawn = false
+            blackGui.IgnoreGuiInset = true
+            blackGui.DisplayOrder = 5
+            local frame = Instance.new("Frame")
+            frame.Size = UDim2.fromScale(1, 1)
+            frame.BackgroundColor3 = Color3.new(0, 0, 0)
+            frame.BorderSizePixel = 0
+            frame.Parent = blackGui
+            mountGui(blackGui)
+        end
+        pcall(function() RunService:Set3dRenderingEnabled(false) end)
+        if type(setfpscap) == "function" then
+            if originalFps == nil and type(getfpscap) == "function" then
+                pcall(function() originalFps = getfpscap() end)
+            end
+            pcall(setfpscap, Tune.BlackScreenFps)
+        end
+    else
+        pcall(function() RunService:Set3dRenderingEnabled(true) end)
+        if blackGui then
+            blackGui:Destroy()
+            blackGui = nil
+        end
+        if type(setfpscap) == "function" then
+            pcall(setfpscap, originalFps or 60)
+        end
+    end
+end
+
+end -- scope
+local Items, potionNames, goToPotionShop, shopLabels, buyPotions, sellNow, redeemAllCodes, resetCharacter, rejoinServer
+do -- scope: keeps top-level locals under the 200 limit
+--------------------------------------------------------------------------
+-- Items and session tools: potions, potion shop, selling, codes, dungeon,
+-- reset and rejoin. Every remote call shape is copied from the dump (see the
+-- Config comments); what the server accepts is unverified until run.
+--------------------------------------------------------------------------
+Items = { utils = nil, data = nil, lastPotion = 0, lastDungeon = 0 }
+
+local function inventoryData()
+    Items.data = Items.data or requireByPath(Config.InventoryDataModule)
+    return Items.data
+end
+
+-- Inventory attribute -> table of entries ({ Item, Amount, Bound, ... }) keyed by slot.
+local function inventoryEntries()
+    Items.utils = Items.utils or requireByPath(Config.UtilsModule)
+    if not Items.utils or type(Items.utils.fastDecode) ~= "function" then
+        return nil, "Utils.fastDecode unavailable: " .. Config.UtilsModule
+    end
+    local raw = LocalPlayer:GetAttribute(Config.InventoryAttribute) or "[]"
+    local ok, decoded = pcall(Items.utils.fastDecode, raw)
+    if not ok or type(decoded) ~= "table" then
+        return nil, "Inventory attribute did not decode"
+    end
+    return decoded, nil
+end
+
+local function entryAmount(entry)
+    return math.max(1, math.floor(tonumber(entry.Amount) or 1))
+end
+
+-- Finds the slot holding any of `keys`. Returns (slot, amount) or nil.
+local function findItemSlot(keys)
+    local inv = inventoryEntries()
+    if not inv then
+        return nil
+    end
+    for slot, entry in pairs(inv) do
+        if type(entry) == "table" then
+            for _, key in ipairs(keys) do
+                if entry.Item == key then
+                    return slot, entryAmount(entry)
+                end
+            end
+        end
+    end
+    return nil
+end
+
+local function potionCount(keys)
+    local inv = inventoryEntries()
+    local total = 0
+    if inv then
+        for _, entry in pairs(inv) do
+            if type(entry) == "table" then
+                for _, key in ipairs(keys) do
+                    if entry.Item == key then
+                        total = total + entryAmount(entry)
+                    end
+                end
+            end
+        end
+    end
+    return total
+end
+
+function potionNames(kind)
+    local names = {}
+    for _, potion in ipairs(Config.Potions[kind]) do
+        table.insert(names, potion.label)
+    end
+    return names
+end
+
+-- Auto potion ------------------------------------------------------------
+spawnGuarded("potion", function()
+    while alive do
+        if State.PotionHp or State.PotionMp then
+            local _, _, hum = localChar()
+            local inventoryRemote = resolve(Config.InventoryRemote)
+            if not hum or LocalPlayer:GetAttribute(Config.InGameAttribute) ~= true then
+                setStatus("potion", "waiting for a living character")
+            elseif not inventoryRemote then
+                setStatus("potion", "Inventory remote not found: " .. Config.InventoryRemote)
+            else
+                local hpPct = hum.Health / math.max(hum.MaxHealth, 1) * 100
+                local maxMana = tonumber(LocalPlayer:GetAttribute(Config.MaxManaAttribute)) or 0
+                local curMana = tonumber(LocalPlayer:GetAttribute(Config.CurrentManaAttribute))
+                local mpPct = (maxMana > 0 and curMana ~= nil) and (curMana / maxMana * 100) or nil
+                local want, kind = nil, nil
+                if State.PotionHp and hpPct <= Tune.HpPercent then
+                    want, kind = Config.Potions.Health[Options.HpPotion], "HP"
+                elseif State.PotionMp and mpPct ~= nil and mpPct <= Tune.MpPercent then
+                    want, kind = Config.Potions.Mana[Options.MpPotion], "MP"
+                end
+                local now = os.clock()
+                if want and now - Items.lastPotion >= Tune.PotionCooldownSeconds then
+                    local slot = findItemSlot(want.keys)
+                    if slot ~= nil then
+                        fire(inventoryRemote, "use", slot)
+                        Items.lastPotion = now
+                        setStatus("potion", string.format("drank %s (%s was low)", want.label, kind))
+                    else
+                        setStatus("potion", "none left in the inventory: " .. want.label)
+                    end
+                elseif not want then
+                    setStatus("potion", string.format("watching HP %d%%%s", math.floor(hpPct),
+                        mpPct and string.format(", MP %d%%", math.floor(mpPct)) or ""))
+                end
+            end
+        end
+        task.wait(jitter(0.4))
+    end
+end)
+
+-- Trips (fly to an NPC) --------------------------------------------------
+local function flyNear(model, standoff, timeout)
+    local deadline = os.clock() + timeout
+    while alive and os.clock() < deadline do
+        local char, root = localChar()
+        local npcRoot = model.Parent and getRoot(model)
+        if not char or not npcRoot then
+            Mover.goal = nil
+            return false
+        end
+        local flat = Vector3.new(root.Position.X - npcRoot.Position.X, 0, root.Position.Z - npcRoot.Position.Z)
+        flat = flat.Magnitude > 0.1 and flat.Unit or Vector3.new(0, 0, 1)
+        local stand = npcRoot.Position + flat * standoff
+        Mover.goal = CFrame.lookAt(stand, Vector3.new(npcRoot.Position.X, stand.Y, npcRoot.Position.Z))
+        if (npcRoot.Position - root.Position).Magnitude <= standoff + 2 then
+            return true
+        end
+        task.wait(0.1)
+    end
+    return false
+end
+
+local function runTrip(label, fn)
+    if Activity.tripBusy then
+        logEvent("info", label .. ": another trip is still running")
+        return
+    end
+    Activity.tripBusy = true
+    task.spawn(function()
+        local ok, err = pcall(fn)
+        Mover.goal = nil
+        Activity.tripBusy = false
+        if not ok then
+            logEvent("error", label .. ": " .. tostring(err))
+        end
+    end)
+end
+
+local function sellerModel()
+    return findGiverModel(Config.PotionSellerKey)
+end
+
+-- Potion shop ---------------------------------------------------------------
+function goToPotionShop(openShop)
+    runTrip("shop", function()
+        local model = sellerModel()
+        if not model then
+            setStatus("shop", "Item Seller model not found in Workspace")
+            return
+        end
+        setStatus("shop", "flying to the Item Seller")
+        if not flyNear(model, Config.GiverStandoffStuds, 40) then
+            setStatus("shop", "could not reach the Item Seller")
+            return
+        end
+        setStatus("shop", "at the Item Seller")
+        if openShop and type(fireproximityprompt) == "function" then
+            for _, d in ipairs(model:GetDescendants()) do
+                if d:IsA("ProximityPrompt") then
+                    pcall(fireproximityprompt, d)
+                    break
+                end
+            end
+        end
+    end)
+end
+
+local function shopChoices()
+    local list = {}
+    for _, p in ipairs(Config.Potions.Health) do table.insert(list, p) end
+    for _, p in ipairs(Config.Potions.Mana) do table.insert(list, p) end
+    return list
+end
+
+function shopLabels()
+    local names = {}
+    for _, p in ipairs(shopChoices()) do table.insert(names, p.label) end
+    return names
+end
+
+-- Buys Tune.PotionBuyCount of the chosen potion. The client's own Yens check
+-- is copied; the purchase is verified by the Yens attribute dropping.
+function buyPotions()
+    runTrip("shop", function()
+        local remote = resolve(Config.ItemShopRemote)
+        if not remote then
+            setStatus("shop", "ItemShop remote not found: " .. Config.ItemShopRemote)
+            return
+        end
+        local potion = shopChoices()[Options.BuyPotion]
+        local model = sellerModel()
+        if model and not flyNear(model, Config.GiverStandoffStuds, 40) then
+            setStatus("shop", "could not reach the Item Seller, trying remotely")
+        end
+        local data = inventoryData()
+        local price = data and data[potion.shop] and tonumber(data[potion.shop].Price) or nil
+        local bought = 0
+        for i = 1, math.floor(Tune.PotionBuyCount) do
+            if not alive then break end
+            local yens = tonumber(LocalPlayer:GetAttribute(Config.YensAttribute)) or 0
+            if price and yens < price then
+                setStatus("shop", string.format("not enough Yens for %s (need %d)", potion.label, price))
+                break
+            end
+            fire(remote, potion.shop)
+            local deadline = os.clock() + 1.5
+            local spent = false
+            repeat
+                task.wait(0.1)
+                spent = (tonumber(LocalPlayer:GetAttribute(Config.YensAttribute)) or 0) < yens
+            until spent or os.clock() >= deadline
+            if not spent then
+                setStatus("shop", "server did not take the purchase (open the shop once with Go to shop)")
+                break
+            end
+            bought = bought + 1
+            task.wait(jitter(0.3))
+        end
+        if bought > 0 then
+            setStatus("shop", string.format("bought %d x %s", bought, potion.label))
+            notify(SCRIPT_NAME, string.format("Bought %d x %s", bought, potion.label))
+        end
+    end)
+end
+
+-- Selling ---------------------------------------------------------------------
+local function equippedNames()
+    local set = {}
+    local function scan(container)
+        if container then
+            for _, tool in ipairs(container:GetChildren()) do
+                if tool:IsA("Tool") then
+                    set[tool.Name] = true
+                    local id = tool:GetAttribute("ItemId")
+                    if type(id) == "string" then set[id] = true end
+                end
+            end
+        end
+    end
+    scan(LocalPlayer.Character)
+    scan(LocalPlayer:FindFirstChildOfClass("Backpack"))
+    return set
+end
+
+-- Same exclusions as the dump's getSellValue (220166), plus: rarity cap,
+-- bound copies, grimoires, consumables and anything currently held as a tool.
+local function sellableAmount(name, entry, held)
+    local data = inventoryData()
+    local item = data and data[name]
+    if type(name) ~= "string" or type(item) ~= "table" or held[name] then return 0 end
+    if item.NonSellable == true or item.GamepassItem == true or item.Rarity == "LIMITED" or name == "Combat" then return 0 end
+    if item.Type == "Grimoire" or item.Type == "Consumable" then return 0 end
+    if (tonumber(item.SellValue) or 0) <= 0 then return 0 end
+    local rank = nil
+    for index, rarity in ipairs(Config.SellRarities) do
+        if rarity == item.Rarity then rank = index end
+    end
+    if rank == nil or rank > Options.SellMaxRarity then return 0 end
+    local amount = entryAmount(entry)
+    local bound = math.clamp(math.floor(tonumber(entry.Bound) or 0), 0, amount)
+    return amount - bound
+end
+
+function sellNow()
+    runTrip("sell", function()
+        local remote = resolve(Config.InventoryRemote)
+        if not remote then
+            setStatus("sell", "Inventory remote not found: " .. Config.InventoryRemote)
+            return
+        end
+        local tried, sold, limit = {}, 0, 100
+        while alive and limit > 0 do
+            limit = limit - 1
+            local inv, why = inventoryEntries()
+            if not inv then
+                setStatus("sell", tostring(why))
+                break
+            end
+            local held = equippedNames()
+            local pickSlot, pickName, pickAmount = nil, nil, nil
+            for slot, entry in pairs(inv) do
+                if type(entry) == "table" then
+                    local id = tostring(slot) .. "|" .. tostring(entry.Item)
+                    local amount = (tried[id] or 0) < 2 and sellableAmount(entry.Item, entry, held) or 0
+                    if amount > 0 then
+                        pickSlot, pickName, pickAmount = slot, entry.Item, amount
+                        tried[id] = (tried[id] or 0) + 1
+                        break
+                    end
+                end
+            end
+            if pickSlot == nil then
+                break
+            end
+            fire(remote, "sell", pickSlot, pickAmount)
+            sold = sold + 1
+            setStatus("sell", string.format("selling %s x%d", tostring(pickName), pickAmount))
+            task.wait(0.3)
+        end
+        setStatus("sell", string.format("sell finished, %d sell request(s) sent", sold))
+        notify(SCRIPT_NAME, string.format("Sell finished: %d request(s)", sold))
+    end)
+end
+
+-- Codes -----------------------------------------------------------------------
+local codesWired = false
+local function wireCodesReply()
+    if codesWired then return end
+    local remote = resolve(Config.CodesRemote)
+    if remote and remote:IsA("RemoteEvent") then
+        codesWired = true
+        track(remote.OnClientEvent:Connect(function(message)
+            logEvent("info", "code reply: " .. tostring(message))
+        end))
+    end
+end
+
+local function parseCodes(text)
+    local codes, seen = {}, {}
+    for token in string.gmatch(tostring(text), "[^%s,;]+") do
+        if #token <= 128 and not seen[token] then
+            seen[token] = true
+            table.insert(codes, token)
+        end
+    end
+    return codes
+end
+
+function redeemAllCodes()
+    local codes = parseCodes(Options.CodesText)
+    if #codes == 0 then
+        setStatus("codes", "no codes entered (one per line)")
+        return
+    end
+    local remote = resolve(Config.CodesRemote)
+    if not remote then
+        setStatus("codes", "Codes remote not found: " .. Config.CodesRemote)
+        return
+    end
+    wireCodesReply()
+    task.spawn(function()
+        local okGroup, inGroup = pcall(LocalPlayer.IsInGroupAsync, LocalPlayer, Config.CodesGroupId)
+        if okGroup and inGroup == false then
+            setStatus("codes", "codes need group " .. Config.CodesGroupId .. " membership (client check in the dump)")
+            return
+        end
+        local sentAt = {}
+        for index, code in ipairs(codes) do
+            if not alive then break end
+            -- stay under WrongPerMinute even if every code were wrong
+            local now = os.clock()
+            local recent = {}
+            for _, t in ipairs(sentAt) do
+                if now - t < 60 then table.insert(recent, t) end
+            end
+            sentAt = recent
+            if #sentAt >= Config.CodesWrongPerMinute then
+                local waitFor = 60 - (now - sentAt[1]) + 0.5
+                setStatus("codes", string.format("pausing %d s for the per-minute limit", math.ceil(waitFor)))
+                task.wait(waitFor)
+            end
+            fire(remote, code)
+            table.insert(sentAt, os.clock())
+            setStatus("codes", string.format("sent %d/%d", index, #codes))
+            task.wait(Config.CodesRequestGap + 0.3)
+        end
+        setStatus("codes", string.format("finished, %d code(s) sent (see the log for replies)", #codes))
+        notify(SCRIPT_NAME, string.format("Codes done: %d sent", #codes))
+    end)
+end
+
+-- Dungeon -----------------------------------------------------------------------
+spawnGuarded("dungeon", function()
+    while alive do
+        if State.AutoDungeon then
+            local joinRemote = resolve(Config.DungeonJoinRemote)
+            local backRemote = resolve(Config.DungeonRemote)
+            if LocalPlayer:GetAttribute("DungeonShowingRewards") == true and backRemote then
+                fire(backRemote, "ReturnToMainGame")
+                setStatus("dungeon", "rewards are showing, returning to the main game")
+                task.wait(5)
+            elseif LocalPlayer:GetAttribute("DungeonActive") == true then
+                setStatus("dungeon", "inside a dungeon (farm and potions keep running)")
+            elseif LocalPlayer:GetAttribute("DungeonQueued") == true
+                or LocalPlayer:GetAttribute("DungeonInMatchmakingQueue") == true then
+                setStatus("dungeon", "queued")
+            elseif not joinRemote then
+                setStatus("dungeon", "DungeonJoin remote not found: " .. Config.DungeonJoinRemote)
+            elseif LocalPlayer:GetAttribute(Config.InGameAttribute) ~= true then
+                setStatus("dungeon", "InGame is not true")
+            else
+                local now = os.clock()
+                if now - Items.lastDungeon >= Tune.DungeonIntervalSeconds then
+                    Items.lastDungeon = now
+                    local id = Config.DungeonIds[Options.DungeonId]
+                    local mode = Config.DungeonModes[Options.DungeonMode]
+                    fire(joinRemote, "Play", mode, id)
+                    setStatus("dungeon", string.format("sent Play %s / %s (costs a dungeon key)", mode, id))
+                    notify(SCRIPT_NAME, "Dungeon join sent: " .. id)
+                end
+            end
+        end
+        task.wait(jitter(1))
+    end
+end)
+
+-- Session tools -----------------------------------------------------------------
+function resetCharacter()
+    local char = LocalPlayer.Character
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    if hum then
+        hum.Health = 0
+        logEvent("info", "character reset")
+        notify(SCRIPT_NAME, "Character reset")
+    else
+        logEvent("error", "reset: no character or Humanoid")
+    end
+end
+
+function rejoinServer()
+    notify(SCRIPT_NAME, "Rejoining this server...")
+    logEvent("info", "rejoining")
+    local ok, err = pcall(function()
+        if #Players:GetPlayers() <= 1 then
+            TeleportService:Teleport(game.PlaceId, LocalPlayer)
+        else
+            TeleportService:TeleportToPlaceInstance(game.PlaceId, game.JobId, LocalPlayer)
+        end
+    end)
+    if not ok then
+        logEvent("error", "rejoin: " .. tostring(err))
+    end
+end
+
+end -- scope
+local C, UIPrefs, corner, stroke, tween, makeLabel, gui, root, collapseButton, closeButton, sidebar, applyLayout, fit, pages, pageOrder, pageRepaints, noRegister, currentPage, lastRealPage, nextOrder, selectPage, addTitle, addNote, Store, saveStore, addToggle, addStateToggle, addButtonRow, StepperRanges, addStepper, addCycleRow, addActionRow, addPairRow, addTextBoxRow, addKeyRow, setBlack, gateAttack
+do -- scope: keeps top-level locals under the 200 limit
+--------------------------------------------------------------------------
+-- UI: PUNPUN Premium layout (black / crimson, header + sidebar + pages).
+-- Presentation only. Every State / Options / Tune key and every gate is the
+-- same as before; only the way they are shown changed.
+--------------------------------------------------------------------------
+local TweenService = game:GetService("TweenService")
+
+C = {
+    bg = Color3.fromRGB(10, 10, 12),
+    panel = Color3.fromRGB(19, 19, 23),
+    panel2 = Color3.fromRGB(29, 29, 34),
+    red = Color3.fromRGB(225, 35, 53),
+    redDark = Color3.fromRGB(110, 18, 30),
+    text = Color3.fromRGB(242, 242, 245),
+    muted = Color3.fromRGB(155, 155, 165),
+    green = Color3.fromRGB(80, 210, 130),
+}
+
+UIPrefs = { Animate = true, Compact = false, Scale = 1, Favorites = {} }
+local isTouch = UserInputService.TouchEnabled
+local rowH = isTouch and 46 or 40
+local textSize = isTouch and 14 or 13
+local HEADER_H = 48
+
+function corner(inst, radius)
+    local c = Instance.new("UICorner")
+    c.CornerRadius = UDim.new(0, radius or 8)
+    c.Parent = inst
+    return c
+end
+
+function stroke(inst, color, thickness)
+    local s = Instance.new("UIStroke")
+    s.Color = color or C.redDark
+    s.Thickness = thickness or 1
+    s.Transparency = 0.25
+    s.Parent = inst
+    return s
+end
+
+function tween(inst, props, duration)
+    if not UIPrefs.Animate then
+        for key, value in pairs(props) do
+            inst[key] = value
+        end
+        return
+    end
+    TweenService:Create(inst, TweenInfo.new(duration or 0.18,
+        Enum.EasingStyle.Quart, Enum.EasingDirection.Out), props):Play()
+end
+
+function makeLabel(parent, text, size, color, bold)
+    local l = Instance.new("TextLabel")
+    l.BackgroundTransparency = 1
+    l.Text = text
+    l.TextSize = size
+    l.Font = bold and Enum.Font.GothamBold or Enum.Font.Gotham
+    l.TextColor3 = color
+    l.TextXAlignment = Enum.TextXAlignment.Left
+    l.TextWrapped = true
+    l.Parent = parent
+    return l
+end
+
+gui = Instance.new("ScreenGui")
+gui.Name = "GrimoiresByPUN"
+gui.ResetOnSpawn = false
+gui.IgnoreGuiInset = true
+gui.DisplayOrder = 10
+mountGui(gui)
+
+-- Window --------------------------------------------------------------
+root = Instance.new("Frame")
+root.Name = "Window"
+root.BackgroundColor3 = C.bg
+root.BorderSizePixel = 0
+root.Active = true
+root.ClipsDescendants = true
+root.Parent = gui
+corner(root, 12)
+stroke(root, C.red, 1.5)
+local uiScale = Instance.new("UIScale")
+uiScale.Parent = root
+
+local header = Instance.new("Frame")
+header.Size = UDim2.new(1, 0, 0, HEADER_H)
+header.BackgroundColor3 = C.panel
+header.BorderSizePixel = 0
+header.Parent = root
+corner(header, 12)
+
+local titleLabel = makeLabel(header, "  PUNPUN  /  GRIMOIRES", 16, C.red, true)
+titleLabel.Size = UDim2.new(1, -96, 1, 0)
+
+local function headerButton(text, xOffset)
+    local b = Instance.new("TextButton")
+    b.Text = text
+    b.Size = UDim2.fromOffset(36, 32)
+    b.Position = UDim2.new(1, xOffset, 0, 8)
+    b.BackgroundColor3 = C.panel2
+    b.TextColor3 = C.text
+    b.Font = Enum.Font.GothamMedium
+    b.TextSize = 14
+    b.BorderSizePixel = 0
+    b.Parent = header
+    corner(b, 8)
+    stroke(b)
+    return b
+end
+collapseButton = headerButton("☰", -84)
+closeButton = headerButton("×", -44)
+local minimizeButton = headerButton("–", -124)
+titleLabel.Size = UDim2.new(1, -136, 1, 0)
+
+local body = Instance.new("Frame")
+body.Position = UDim2.fromOffset(10, HEADER_H + 10)
+body.Size = UDim2.new(1, -20, 1, -(HEADER_H + 20))
+body.BackgroundTransparency = 1
+body.Parent = root
+
+sidebar = Instance.new("ScrollingFrame")
+sidebar.BackgroundColor3 = C.panel
+sidebar.BorderSizePixel = 0
+sidebar.ScrollBarThickness = 0
+sidebar.CanvasSize = UDim2.new()
+sidebar.AutomaticCanvasSize = Enum.AutomaticSize.Y
+sidebar.Parent = body
+corner(sidebar, 10)
+do
+    local layout = Instance.new("UIListLayout")
+    layout.Padding = UDim.new(0, 6)
+    layout.SortOrder = Enum.SortOrder.LayoutOrder
+    layout.Parent = sidebar
+    local pad = Instance.new("UIPadding")
+    pad.PaddingTop = UDim.new(0, 8)
+    pad.PaddingBottom = UDim.new(0, 8)
+    pad.PaddingLeft = UDim.new(0, 8)
+    pad.PaddingRight = UDim.new(0, 8)
+    pad.Parent = sidebar
+end
+
+local content = Instance.new("Frame")
+content.BackgroundColor3 = C.panel
+content.BorderSizePixel = 0
+content.Parent = body
+corner(content, 10)
+
+-- Layout / responsive fit ----------------------------------------------
+local smallScreen = false
+local minimized = false
+local MINIMIZED_W = 180
+local winPos = Vector2.new(0, 0)
+local navButtons = {}
+
+local function sideWidth()
+    if UIPrefs.Compact then
+        return 48
+    end
+    return smallScreen and 108 or 132
+end
+
+function applyLayout()
+    local w = sideWidth()
+    sidebar.Size = UDim2.new(0, w, 1, 0)
+    content.Position = UDim2.new(0, w + 10, 0, 0)
+    content.Size = UDim2.new(1, -(w + 10), 1, 0)
+    local short = { Dashboard = "Da", Farm = "Fm", Combat = "Cb", Items = "It", Tools = "Tl",
+        Favorites = "★", Character = "Ch", Settings = "St", Log = "Lg", About = "Ab" }
+    for name, button in pairs(navButtons) do
+        button.Text = UIPrefs.Compact and (short[name] or string.sub(name, 1, 2)) or name
+    end
+end
+
+local function viewportSize()
+    local cam = Workspace.CurrentCamera
+    return cam and cam.ViewportSize or Vector2.new(800, 600)
+end
+
+local function clampWindow(pos)
+    local vp = viewportSize()
+    local size = root.AbsoluteSize
+    return Vector2.new(
+        math.clamp(pos.X, 0, math.max(vp.X - math.min(size.X, 80), 0)),
+        math.clamp(pos.Y, 0, math.max(vp.Y - HEADER_H, 0)))
+end
+
+local firstFit = true
+function fit()
+    local vp = viewportSize()
+    smallScreen = vp.X < 600
+    local scale = math.clamp(UIPrefs.Scale, 0.6, 1.5)
+    uiScale.Scale = scale
+    local w = smallScreen and math.floor(vp.X * 0.94 / scale) or 540
+    local h = math.clamp(math.floor(vp.Y * 0.8 / scale), 260, 420)
+    if minimized then
+        root.Size = UDim2.fromOffset(MINIMIZED_W, HEADER_H)
+    else
+        root.Size = UDim2.fromOffset(w, h)
+    end
+    if firstFit then
+        firstFit = false
+        winPos = Vector2.new(math.floor((vp.X - w * scale) / 2), math.floor((vp.Y - h * scale) / 2))
+    end
+    winPos = clampWindow(winPos)
+    root.Position = UDim2.fromOffset(winPos.X, winPos.Y)
+    applyLayout()
+end
+
+-- Minimize: the whole window shrinks to a small draggable tab (header only).
+local function setMinimized(v)
+    minimized = v
+    body.Visible = not v
+    collapseButton.Visible = not v
+    minimizeButton.Text = v and "+" or "–"
+    minimizeButton.Position = UDim2.new(1, v and -84 or -124, 0, 8)
+    titleLabel.Text = v and "  PUNPUN" or "  PUNPUN  /  GRIMOIRES"
+    titleLabel.Size = UDim2.new(1, v and -96 or -136, 1, 0)
+    fit()
+end
+minimizeButton.MouseButton1Click:Connect(function()
+    setMinimized(not minimized)
+end)
+
+-- Dragging by the header (mouse or touch) ---------------------------------
+local dragging, dragStart, dragOrigin = false, nil, nil
+header.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = true
+        dragStart = input.Position
+        dragOrigin = winPos
+        input.Changed:Connect(function()
+            if input.UserInputState == Enum.UserInputState.End then
+                dragging = false
+            end
+        end)
+    end
+end)
+track(UserInputService.InputChanged:Connect(function(input)
+    if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement
+        or input.UserInputType == Enum.UserInputType.Touch) then
+        local delta = input.Position - dragStart
+        winPos = clampWindow(dragOrigin + Vector2.new(delta.X, delta.Y))
+        root.Position = UDim2.fromOffset(winPos.X, winPos.Y)
+    end
+end))
+
+-- Pages -------------------------------------------------------------------
+local tabNames = { "Dashboard", "Farm", "Combat", "Items", "Tools", "Favorites",
+    "Character", "Settings", "Log", "About" }
+pages, pageOrder, pageRepaints, noRegister = {}, {}, {}, {}
+currentPage, lastRealPage = nil, "Dashboard"
+local SEARCH_H = 34
+
+local function makePage(name)
+    local page = Instance.new("ScrollingFrame")
+    page.Name = name
+    page.Size = UDim2.new(1, -20, 1, -(SEARCH_H + 26))
+    page.Position = UDim2.fromOffset(10, SEARCH_H + 16)
+    page.BackgroundTransparency = 1
+    page.BorderSizePixel = 0
+    page.CanvasSize = UDim2.new()
+    page.AutomaticCanvasSize = Enum.AutomaticSize.Y
+    page.ScrollBarThickness = isTouch and 6 or 4
+    page.ScrollBarImageColor3 = C.red
+    page.Visible = false
+    page.Parent = content
+    local layout = Instance.new("UIListLayout")
+    layout.Padding = UDim.new(0, 8)
+    layout.SortOrder = Enum.SortOrder.LayoutOrder
+    layout.Parent = page
+    pages[name] = page
+    pageOrder[page] = 0
+    pageRepaints[page] = {}
+    return page
+end
+for _, name in ipairs(tabNames) do
+    makePage(name)
+end
+makePage("Search") -- results page, not in the sidebar
+noRegister[pages.Favorites] = true
+noRegister[pages.Search] = true
+
+function nextOrder(page)
+    pageOrder[page] = pageOrder[page] + 1
+    return pageOrder[page]
+end
+
+local function register(page, repaint)
+    table.insert(pageRepaints[page], repaint)
+end
+
+local refreshCharacter, rebuildFavorites, renderLog -- assigned further down
+
+function selectPage(name)
+    currentPage = name
+    if name ~= "Search" then
+        lastRealPage = name
+    end
+    for pageName, page in pairs(pages) do
+        page.Visible = (pageName == name)
+    end
+    for navName, button in pairs(navButtons) do
+        tween(button, { BackgroundColor3 = navName == name and C.redDark or C.panel2 })
+    end
+    if name == "Favorites" and rebuildFavorites then rebuildFavorites() end
+    if name == "Log" and renderLog then renderLog() end
+    for _, repaint in ipairs(pageRepaints[pages[name]]) do
+        repaint()
+    end
+    if name == "Character" and refreshCharacter then refreshCharacter() end
+end
+
+-- Search box --------------------------------------------------------------
+local searchBox = Instance.new("TextBox")
+searchBox.Size = UDim2.new(1, -20, 0, SEARCH_H)
+searchBox.Position = UDim2.fromOffset(10, 8)
+searchBox.BackgroundColor3 = C.panel2
+searchBox.BorderSizePixel = 0
+searchBox.Font = Enum.Font.Gotham
+searchBox.TextSize = textSize
+searchBox.TextColor3 = C.text
+searchBox.PlaceholderText = "Search settings..."
+searchBox.PlaceholderColor3 = C.muted
+searchBox.Text = ""
+searchBox.ClearTextOnFocus = false
+searchBox.TextXAlignment = Enum.TextXAlignment.Left
+searchBox.Parent = content
+corner(searchBox, 8)
+stroke(searchBox)
+do
+    local pad = Instance.new("UIPadding")
+    pad.PaddingLeft = UDim.new(0, 10)
+    pad.Parent = searchBox
+end
+
+local suppressSearch = false
+local function clearSearch()
+    suppressSearch = true
+    searchBox.Text = ""
+    suppressSearch = false
+end
+
+for index, name in ipairs(tabNames) do
+    local b = Instance.new("TextButton")
+    b.LayoutOrder = index
+    b.Size = UDim2.new(1, 0, 0, 36)
+    b.BackgroundColor3 = C.panel2
+    b.BorderSizePixel = 0
+    b.Text = name
+    b.TextColor3 = C.text
+    b.Font = Enum.Font.GothamMedium
+    b.TextSize = 13
+    b.Parent = sidebar
+    corner(b, 8)
+    stroke(b)
+    navButtons[name] = b
+    b.MouseButton1Click:Connect(function()
+        clearSearch()
+        selectPage(name)
+    end)
+end
+
+-- Setting registry: every toggle, stepper, cycle and action registers a
+-- builder so Search and Favorites can rebuild the same row on another page.
+local Registry = {}
+local function registerSetting(page, id, searchText, build)
+    if noRegister[page] then
+        return
+    end
+    table.insert(Registry, {
+        id = id,
+        text = string.lower(page.Name .. " " .. searchText),
+        build = build,
+    })
+end
+
+-- Row builders --------------------------------------------------------------
+function addTitle(page, text)
+    local l = makeLabel(page, string.upper(text), 14, C.red, true)
+    l.LayoutOrder = nextOrder(page)
+    l.Size = UDim2.new(1, 0, 0, 24)
+    return l
+end
+
+function addNote(page, text, color)
+    local l = makeLabel(page, text, 12, color or C.muted, false)
+    l.LayoutOrder = nextOrder(page)
+    l.Size = UDim2.new(1, 0, 0, 0)
+    l.AutomaticSize = Enum.AutomaticSize.Y
+    l.TextYAlignment = Enum.TextYAlignment.Top
+    return l
+end
+
+local function makeRow(page, height)
+    local row = Instance.new("Frame")
+    row.LayoutOrder = nextOrder(page)
+    row.Size = UDim2.new(1, 0, 0, height or rowH)
+    row.BackgroundColor3 = C.panel2
+    row.BorderSizePixel = 0
+    row.Parent = page
+    corner(row, 8)
+    stroke(row)
+    return row
+end
+
+-- Persistence (executor files when available, memory otherwise) ----------------
+Store = { file = "GrimoiresByPUN_prefs.json", data = {} }
+local function storeLoad()
+    if type(isfile) == "function" and type(readfile) == "function" then
+        local ok, raw = pcall(function()
+            if isfile(Store.file) then
+                return readfile(Store.file)
+            end
+            return nil
+        end)
+        if ok and type(raw) == "string" and raw ~= "" then
+            local ok2, data = pcall(HttpService.JSONDecode, HttpService, raw)
+            if ok2 and type(data) == "table" then
+                return data
+            end
+        end
+    end
+    return {}
+end
+function saveStore()
+    Store.data.favorites = UIPrefs.Favorites
+    Store.data.ui = {
+        Animate = UIPrefs.Animate, Compact = UIPrefs.Compact,
+        Scale = UIPrefs.Scale, Notify = Prefs.Notify,
+    }
+    if type(writefile) == "function" then
+        pcall(function()
+            writefile(Store.file, HttpService:JSONEncode(Store.data))
+        end)
+    end
+end
+Store.data = storeLoad()
+if type(Store.data.favorites) == "table" then
+    for id, on in pairs(Store.data.favorites) do
+        if on == true and type(id) == "string" then
+            UIPrefs.Favorites[id] = true
+        end
+    end
+end
+if type(Store.data.ui) == "table" then
+    local ui = Store.data.ui
+    if type(ui.Animate) == "boolean" then UIPrefs.Animate = ui.Animate end
+    if type(ui.Compact) == "boolean" then UIPrefs.Compact = ui.Compact end
+    if type(ui.Notify) == "boolean" then Prefs.Notify = ui.Notify end
+    if type(ui.Scale) == "number" and ui.Scale == ui.Scale then
+        UIPrefs.Scale = math.clamp(ui.Scale, 0.6, 1.5)
+    end
+end
+if type(Store.data.presets) ~= "table" then
+    Store.data.presets = {}
+end
+
+local function addStar(row, id, xOffset)
+    local star = Instance.new("TextButton")
+    star.Size = UDim2.fromOffset(24, 24)
+    star.Position = UDim2.new(1, xOffset, 0.5, -12)
+    star.BackgroundTransparency = 1
+    star.Font = Enum.Font.GothamBold
+    star.TextSize = 18
+    star.Parent = row
+    local function paint()
+        local on = UIPrefs.Favorites[id] == true
+        star.Text = on and "★" or "☆"
+        star.TextColor3 = on and C.red or C.muted
+    end
+    star.MouseButton1Click:Connect(function()
+        if UIPrefs.Favorites[id] then
+            UIPrefs.Favorites[id] = nil
+        else
+            UIPrefs.Favorites[id] = true
+        end
+        saveStore()
+        paint()
+        if currentPage == "Favorites" and rebuildFavorites then
+            rebuildFavorites()
+        end
+    end)
+    paint()
+    return star
+end
+
+local function nameAndDesc(row, name, desc, rightPad)
+    local nameLabel = makeLabel(row, name, textSize + 1, C.text, true)
+    nameLabel.Position = UDim2.fromOffset(10, 4)
+    nameLabel.Size = UDim2.new(1, -rightPad, 0, 24)
+    nameLabel.TextTruncate = Enum.TextTruncate.AtEnd
+    nameLabel.TextWrapped = false
+    local descLabel = makeLabel(row, desc or "", 11, C.muted, false)
+    descLabel.Position = UDim2.fromOffset(10, 29)
+    descLabel.Size = UDim2.new(1, -rightPad, 0, 28)
+    descLabel.TextYAlignment = Enum.TextYAlignment.Top
+    return descLabel
+end
+
+-- getFn / setFn read and write the value; gateFn returns a reason string
+-- (feature unavailable) or nil, and a gated toggle always reads OFF.
+function addToggle(page, name, desc, getFn, setFn, gateFn, idOverride)
+    local id = idOverride or (page.Name .. "/" .. name)
+    registerSetting(page, id, name .. " " .. (desc or ""), function(p)
+        addToggle(p, name, desc, getFn, setFn, gateFn, id)
+    end)
+    local row = makeRow(page, 62)
+    local descLabel = nameAndDesc(row, name, desc, 110)
+
+    local button = Instance.new("TextButton")
+    button.Size = UDim2.fromOffset(60, 30)
+    button.Position = UDim2.new(1, -70, 0.5, -15)
+    button.BorderSizePixel = 0
+    button.Font = Enum.Font.GothamMedium
+    button.TextSize = 13
+    button.TextColor3 = C.text
+    button.Parent = row
+    corner(button, 8)
+    stroke(button)
+    addStar(row, id, -98)
+
+    local function paint()
+        local reason = gateFn and gateFn()
+        local on = getFn() == true and reason == nil
+        descLabel.Text = reason or desc or ""
+        descLabel.TextColor3 = reason and C.red or C.muted
+        button.Text = on and "ON" or "OFF"
+        tween(button, { BackgroundColor3 = on and C.red or C.panel2 })
+    end
+    button.MouseButton1Click:Connect(function()
+        if gateFn and gateFn() then
+            setFn(false)
+        else
+            setFn(not getFn())
+        end
+        paint()
+    end)
+    register(page, paint)
+    paint()
+end
+
+function addStateToggle(page, name, desc, stateKey, gateFn, onChange)
+    return addToggle(page, name, desc,
+        function() return State[stateKey] end,
+        function(v)
+            State[stateKey] = v
+            if onChange then onChange(v) end
+        end, gateFn)
+end
+
+function addButtonRow(page, text, gateReason, onClick, color)
+    local b = Instance.new("TextButton")
+    b.LayoutOrder = nextOrder(page)
+    b.Size = UDim2.new(1, 0, 0, rowH)
+    b.AutomaticSize = Enum.AutomaticSize.Y
+    b.BackgroundColor3 = color or C.panel2
+    b.BorderSizePixel = 0
+    b.Font = Enum.Font.GothamMedium
+    b.TextSize = 13
+    b.TextWrapped = true
+    b.TextColor3 = C.text
+    b.Text = text
+    b.Parent = page
+    corner(b, 8)
+    stroke(b)
+    if gateReason then
+        b.Text = text .. "\n" .. gateReason
+        b.TextColor3 = C.muted
+    elseif onClick then
+        b.MouseButton1Click:Connect(function() onClick(b) end)
+    end
+    return b
+end
+
+StepperRanges = {}
+function addStepper(page, label, key, minV, maxV, step, fmt, store, onChange, idOverride)
+    store = store or Tune
+    if store == Tune then
+        StepperRanges[key] = { minV, maxV }
+    end
+    local id = idOverride or (page.Name .. "/" .. label)
+    registerSetting(page, id, label, function(p)
+        addStepper(p, label, key, minV, maxV, step, fmt, store, onChange, id)
+    end)
+    local row = makeRow(page)
+    local nameLabel = makeLabel(row, label, textSize, C.text, false)
+    nameLabel.Position = UDim2.fromOffset(10, 0)
+    nameLabel.Size = UDim2.new(1, -200, 1, 0)
+    addStar(row, id, -182)
+
+    local function stepButton(symbol, xOffset)
+        local b = Instance.new("TextButton")
+        b.Size = UDim2.fromOffset(34, 30)
+        b.Position = UDim2.new(1, xOffset, 0.5, -15)
+        b.BackgroundColor3 = C.bg
+        b.BorderSizePixel = 0
+        b.Font = Enum.Font.GothamBold
+        b.TextSize = textSize + 3
+        b.TextColor3 = C.text
+        b.Text = symbol
+        b.Parent = row
+        corner(b, 8)
+        stroke(b)
+        return b
+    end
+    local minus = stepButton("-", -152)
+    local plus = stepButton("+", -42)
+
+    local valueLabel = makeLabel(row, "", textSize, C.red, true)
+    valueLabel.TextXAlignment = Enum.TextXAlignment.Center
+    valueLabel.Position = UDim2.new(1, -114, 0, 0)
+    valueLabel.Size = UDim2.fromOffset(70, rowH)
+
+    local function paint()
+        valueLabel.Text = string.format(fmt, store[key])
+    end
+    local function bump(delta)
+        local v = math.clamp(store[key] + delta, minV, maxV)
+        v = math.floor(v / step + 0.5) * step
+        store[key] = math.clamp(v, minV, maxV)
+        paint()
+        if onChange then onChange(store[key]) end
+    end
+    minus.MouseButton1Click:Connect(function() bump(-step) end)
+    plus.MouseButton1Click:Connect(function() bump(step) end)
+    register(page, paint)
+    paint()
+end
+
+function addCycleRow(page, label, names, getIndex, setIndex, idOverride)
+    local id = idOverride or (page.Name .. "/" .. label)
+    registerSetting(page, id, label, function(p)
+        addCycleRow(p, label, names, getIndex, setIndex, id)
+    end)
+    local row = makeRow(page)
+    local nameLabel = makeLabel(row, label, textSize, C.text, false)
+    nameLabel.Position = UDim2.fromOffset(10, 0)
+    nameLabel.Size = UDim2.new(1, -176, 1, 0)
+    addStar(row, id, -158)
+
+    local valueButton = Instance.new("TextButton")
+    valueButton.Size = UDim2.fromOffset(120, 30)
+    valueButton.Position = UDim2.new(1, -130, 0.5, -15)
+    valueButton.BackgroundColor3 = C.bg
+    valueButton.BorderSizePixel = 0
+    valueButton.Font = Enum.Font.GothamMedium
+    valueButton.TextSize = 11
+    valueButton.TextColor3 = C.text
+    valueButton.TextTruncate = Enum.TextTruncate.AtEnd
+    valueButton.Parent = row
+    corner(valueButton, 8)
+    stroke(valueButton)
+
+    local function paint()
+        local i = getIndex()
+        if names[i] == nil then
+            setIndex(1)
+            i = 1
+        end
+        valueButton.Text = tostring(names[i])
+    end
+    valueButton.MouseButton1Click:Connect(function()
+        setIndex(getIndex() % #names + 1)
+        paint()
+    end)
+    register(page, paint)
+    paint()
+end
+
+-- A row with a name, a description and a RUN button.
+function addActionRow(page, name, desc, run, gateFn, idOverride)
+    local id = idOverride or (page.Name .. "/" .. name)
+    registerSetting(page, id, name .. " " .. (desc or ""), function(p)
+        addActionRow(p, name, desc, run, gateFn, id)
+    end)
+    local row = makeRow(page, 62)
+    local descLabel = nameAndDesc(row, name, desc, 110)
+
+    local button = Instance.new("TextButton")
+    button.Size = UDim2.fromOffset(60, 30)
+    button.Position = UDim2.new(1, -70, 0.5, -15)
+    button.BackgroundColor3 = C.redDark
+    button.BorderSizePixel = 0
+    button.Font = Enum.Font.GothamMedium
+    button.TextSize = 13
+    button.Text = "RUN"
+    button.Parent = row
+    corner(button, 8)
+    stroke(button)
+    addStar(row, id, -98)
+
+    local function paint()
+        local reason = gateFn and gateFn()
+        descLabel.Text = reason or desc or ""
+        descLabel.TextColor3 = reason and C.red or C.muted
+        button.TextColor3 = reason and C.muted or C.text
+    end
+    button.MouseButton1Click:Connect(function()
+        if gateFn and gateFn() then
+            return
+        end
+        run()
+    end)
+    register(page, paint)
+    paint()
+end
+
+-- A row with a name and two small buttons (used for presets).
+function addPairRow(page, name, text1, fn1, text2, fn2)
+    local row = makeRow(page)
+    local nameLabel = makeLabel(row, name, textSize, C.text, false)
+    nameLabel.Position = UDim2.fromOffset(10, 0)
+    nameLabel.Size = UDim2.new(1, -170, 1, 0)
+    local function small(text, xOffset, fn)
+        local b = Instance.new("TextButton")
+        b.Size = UDim2.fromOffset(70, 30)
+        b.Position = UDim2.new(1, xOffset, 0.5, -15)
+        b.BackgroundColor3 = C.bg
+        b.BorderSizePixel = 0
+        b.Font = Enum.Font.GothamMedium
+        b.TextSize = 12
+        b.TextColor3 = C.text
+        b.Text = text
+        b.Parent = row
+        corner(b, 8)
+        stroke(b)
+        b.MouseButton1Click:Connect(fn)
+    end
+    small(text1, -150, fn1)
+    small(text2, -76, fn2)
+end
+
+function addTextBoxRow(page, placeholder, getText, setText, height)
+    local row = makeRow(page, height or 110)
+    local box = Instance.new("TextBox")
+    box.Size = UDim2.new(1, -16, 1, -16)
+    box.Position = UDim2.fromOffset(8, 8)
+    box.BackgroundTransparency = 1
+    box.MultiLine = true
+    box.TextWrapped = true
+    box.ClearTextOnFocus = false
+    box.TextXAlignment = Enum.TextXAlignment.Left
+    box.TextYAlignment = Enum.TextYAlignment.Top
+    box.Font = Enum.Font.Gotham
+    box.TextSize = textSize - 1
+    box.TextColor3 = C.text
+    box.PlaceholderText = placeholder
+    box.PlaceholderColor3 = C.muted
+    box.Text = getText()
+    box.Parent = row
+    box.FocusLost:Connect(function()
+        setText(box.Text)
+    end)
+    return box
+end
+
+function addKeyRow(page)
+    local row = makeRow(page)
+    for index, key in ipairs(Config.SkillKeys) do
+        local b = Instance.new("TextButton")
+        b.Size = UDim2.new(0.25, -6, 1, -10)
+        b.Position = UDim2.new((index - 1) * 0.25, 3, 0, 5)
+        b.BorderSizePixel = 0
+        b.Font = Enum.Font.GothamBold
+        b.TextSize = textSize
+        b.TextColor3 = C.text
+        b.Parent = row
+        corner(b, 8)
+        local function paint()
+            b.BackgroundColor3 = Options.SkillKeys[key] and C.red or C.bg
+            b.Text = "Skill " .. key
+        end
+        b.MouseButton1Click:Connect(function()
+            Options.SkillKeys[key] = not Options.SkillKeys[key]
+            paint()
+        end)
+        register(row.Parent, paint)
+        paint()
+    end
+end
+
+-- Search and Favorites rebuild rows from the registry ----------------------------
+local function clearContainer(page)
+    for _, child in ipairs(page:GetChildren()) do
+        if child:IsA("GuiObject") then
+            child:Destroy()
+        end
+    end
+    pageOrder[page] = 0
+    pageRepaints[page] = {}
+end
+
+local function runSearch()
+    if suppressSearch then
+        return
+    end
+    local query = string.lower(searchBox.Text)
+    query = (string.gsub(query, "^%s+", ""))
+    query = (string.gsub(query, "%s+$", ""))
+    if query == "" then
+        if currentPage == "Search" then
+            selectPage(lastRealPage)
+        end
+        return
+    end
+    local results = pages.Search
+    clearContainer(results)
+    addTitle(results, "Results for: " .. query)
+    local count = 0
+    for _, entry in ipairs(Registry) do
+        if string.find(entry.text, query, 1, true) then
+            count = count + 1
+            if count <= 40 then
+                entry.build(results)
+            end
+        end
+    end
+    if count == 0 then
+        addNote(results, "Nothing matches that.", C.muted)
+    end
+    selectPage("Search")
+end
+searchBox:GetPropertyChangedSignal("Text"):Connect(runSearch)
+
+rebuildFavorites = function()
+    local page = pages.Favorites
+    clearContainer(page)
+    addTitle(page, "Favorites")
+    local count = 0
+    for _, entry in ipairs(Registry) do
+        if UIPrefs.Favorites[entry.id] then
+            count = count + 1
+            entry.build(page)
+        end
+    end
+    if count == 0 then
+        addNote(page, "Tap the star on any setting to pin it here.", C.muted)
+    end
+end
+
+-- Black screen with an on-screen restore button -----------------------------
+function setBlack(on)
+    setBlackScreen(on)
+    if on and blackGui and not blackGui:FindFirstChild("Restore") then
+        local restore = Instance.new("TextButton")
+        restore.Name = "Restore"
+        restore.Text = "Tap to restore"
+        restore.Size = UDim2.fromOffset(150, 44)
+        restore.Position = UDim2.new(0.5, -75, 1, -70)
+        restore.BackgroundColor3 = C.panel2
+        restore.TextColor3 = C.text
+        restore.Font = Enum.Font.GothamMedium
+        restore.TextSize = 13
+        restore.BorderSizePixel = 0
+        restore.Parent = blackGui
+        corner(restore, 8)
+        stroke(restore, C.red, 1)
+        restore.MouseButton1Click:Connect(function()
+            setBlack(false)
+            if currentPage then selectPage(currentPage) end
+        end)
+    end
+end
+
+function gateAttack()
+    local _, reason = gateRemote(Config.AttackRemote, "AttackRemote")
+    return reason
+end
+
+end -- scope
+local errorLabel
+do -- scope: keeps top-level locals under the 200 limit
+----------------------------------------------------------------------
+-- Dashboard
+----------------------------------------------------------------------
+local dashPage = pages.Dashboard
+addTitle(dashPage, "System overview")
+addNote(dashPage, "Grimoires by PUN: client-side helper", C.text)
+addNote(dashPage, "Status: UI READY", C.green)
+statusLabel = addNote(dashPage, "No activity yet", C.muted)
+errorLabel = addNote(dashPage, "Errors: 0", C.green)
+addTitle(dashPage, "Display")
+addToggle(dashPage, "Black Screen", "Stops 3D rendering and caps FPS (saves battery)",
+    function() return State.BlackScreen end, setBlack)
+addStepper(dashPage, "Black screen FPS cap", "BlackScreenFps", 5, 60, 5, "%d")
+
+end -- scope
+do -- scope: keeps top-level locals under the 200 limit
+----------------------------------------------------------------------
+-- Farm
+----------------------------------------------------------------------
+local farmPage = pages.Farm
+addTitle(farmPage, "Auto farm")
+addStateToggle(farmPage, "Auto farm", "Melee, stays behind the mob", "AutoFarm", gateAttack, function(on)
+    if not on and not Activity.chestBusy then Mover.goal = nil end
+end)
+addCycleRow(farmPage, "Farm mode", FarmModeNames,
+    function() return Options.FarmMode end,
+    function(i) Options.FarmMode = i end)
+addToggle(farmPage, "Skip bosses", "Applies in the By my level mode",
+    function() return Options.SkipBosses end,
+    function(v) Options.SkipBosses = v end)
+addStateToggle(farmPage, "Auto skills", "Presses the enabled skill keys while farming", "AutoSkills", function()
+    if VirtualInput == nil then return "VirtualInputManager unavailable in this executor" end
+end)
+addKeyRow(farmPage)
+addTitle(farmPage, "Automation")
+addStateToggle(farmPage, "Auto quest", "Accepts the offered quest", "AutoQuest", function()
+    local _, reason = gateRemote(Config.QuestRemote, "QuestRemote")
+    return reason
+end)
+addStateToggle(farmPage, "Auto chest", "Flies to chests and opens them", "AutoChest")
+addStateToggle(farmPage, "Auto stats", "Spends stat points", "AutoStats", function()
+    local _, reason = gateRemote(Config.StatsRemote, "StatsRemote")
+    return reason
+end)
+local statNames = {}
+for _, key in ipairs(Config.StatKeys) do table.insert(statNames, key) end
+table.insert(statNames, "Spread evenly")
+addCycleRow(farmPage, "Put points in", statNames,
+    function() return Options.StatMode end,
+    function(i) Options.StatMode = i end)
+addTitle(farmPage, "Adjust")
+addStepper(farmPage, "M1 interval (s)", "AttackIntervalSeconds", 0.05, 1.0, 0.05, "%.2f")
+addStepper(farmPage, "Skill interval (s)", "SkillIntervalSeconds", 1, 15, 1, "%d")
+addStepper(farmPage, "Stand behind (studs)", "FarmStandoffStuds", 2,
+    Config.M1BoxOffset + Config.M1BoxDepth / 2, 0.5, "%.1f")
+addStepper(farmPage, "Mob range (studs)", "FarmRange", 50, 600, 50, "%d")
+addStepper(farmPage, "Fly speed (studs/s)", "FlySpeed", 30, 300, 10, "%d")
+addStepper(farmPage, "Level margin (+ above you)", "LevelMargin", -20, 20, 1, "%d")
+addTitle(farmPage, "Auto dungeon")
+addStateToggle(farmPage, "Auto dungeon", "Sends Play, returns to the main game when rewards show", "AutoDungeon", function()
+    local _, reason = gateRemote(Config.DungeonJoinRemote, "DungeonJoinRemote")
+    return reason
+end)
+addCycleRow(farmPage, "Dungeon", Config.DungeonIds,
+    function() return Options.DungeonId end,
+    function(i) Options.DungeonId = i end)
+addCycleRow(farmPage, "Dungeon mode", Config.DungeonModes,
+    function() return Options.DungeonMode end,
+    function(i) Options.DungeonMode = i end)
+addStepper(farmPage, "Join retry (s)", "DungeonIntervalSeconds", 5, 120, 5, "%d")
+addNote(farmPage, "Entering costs a dungeon key. The game shows Teleporting, so the dungeon is probably another place: if so, this script must auto-execute there for farm and potions to continue.", C.muted)
+
+end -- scope
+do -- scope: keeps top-level locals under the 200 limit
+----------------------------------------------------------------------
+-- Combat
+----------------------------------------------------------------------
+local combatPage = pages.Combat
+addTitle(combatPage, "Combat")
+addStateToggle(combatPage, "Rapid M1", "Ignores character state", "RapidM1", gateAttack)
+addStateToggle(combatPage, "Attack anim speed", "Client only", "AttackAnim")
+addStateToggle(combatPage, "Aim lock", touchOnly and "Always on while enabled" or "Hold right mouse", "AimLock")
+addStateToggle(combatPage, "Move speed", "Uses the walk speed below", "Speed")
+addStepper(combatPage, "Walk speed", "WalkSpeed", 16, 120, 8, "%d")
+addTitle(combatPage, "ESP")
+addStateToggle(combatPage, "ESP players", "Highlights other players", "EspPlayers")
+addStateToggle(combatPage, "ESP NPCs", "Highlights mobs in the NPC folder", "EspNpcs", function()
+    local _, reason = gateRemote(Config.MobFolder, "MobFolder")
+    return reason
+end)
+
+end -- scope
+local inventoryGate, itemShopGate, codesGate
+do -- scope: keeps top-level locals under the 200 limit
+----------------------------------------------------------------------
+-- Items
+----------------------------------------------------------------------
+local itemsPage = pages.Items
+function inventoryGate()
+    local _, reason = gateRemote(Config.InventoryRemote, "InventoryRemote")
+    return reason
+end
+function itemShopGate()
+    local _, reason = gateRemote(Config.ItemShopRemote, "ItemShopRemote")
+    return reason
+end
+function codesGate()
+    local _, reason = gateRemote(Config.CodesRemote, "CodesRemote")
+    return reason
+end
+
+addTitle(itemsPage, "Auto potion")
+addStateToggle(itemsPage, "Auto HP potion", "Drinks when your HP is at or below the limit", "PotionHp", inventoryGate)
+addStepper(itemsPage, "HP limit (%)", "HpPercent", 10, 90, 5, "%d")
+addCycleRow(itemsPage, "HP potion", potionNames("Health"),
+    function() return Options.HpPotion end,
+    function(i) Options.HpPotion = i end)
+addStateToggle(itemsPage, "Auto mana potion", "Drinks when your mana is at or below the limit", "PotionMp", inventoryGate)
+addStepper(itemsPage, "Mana limit (%)", "MpPercent", 10, 90, 5, "%d")
+addCycleRow(itemsPage, "Mana potion", potionNames("Mana"),
+    function() return Options.MpPotion end,
+    function(i) Options.MpPotion = i end)
+addStepper(itemsPage, "Potion cooldown (s)", "PotionCooldownSeconds", 1, 10, 0.5, "%.1f")
+
+addTitle(itemsPage, "Roll")
+local spins, spinsReason = gateRemote(Config.SpinsRemote, "SpinsRemote")
+addButtonRow(itemsPage, "Roll grimoire", spinsReason, function() fire(spins, "Grimoire") end)
+addButtonRow(itemsPage, "Keep result", spinsReason, function()
+    fire(spins, "PreSpinChoice", "Grimoire", "Keep")
+end)
+
+addTitle(itemsPage, "Grimoire (BuyWithSpins, arg unverified)")
+local gSpins, gSpinsReason = gateRemote(Config.GrimoireSpinsRemote, "GrimoireSpinsRemote")
+local gachaModule, gachaReason = gateRemote(Config.GachaConfig, "GachaConfig")
+local gacha
+if gachaModule and gachaModule:IsA("ModuleScript") then
+    local ok, result = pcall(require, gachaModule)
+    if ok and type(result) == "table" and type(result.Pool) == "table" and type(result.RarityOrder) == "table" then
+        gacha = result
+    else
+        gachaReason = "GachaConfig require failed or shape changed"
+    end
+end
+if gSpinsReason or not gacha then
+    addButtonRow(itemsPage, "Grimoire list", gSpinsReason or gachaReason or "no gacha data")
+else
+    for _, rarity in ipairs(gacha.RarityOrder) do
+        for _, name in ipairs(gacha.Pool[rarity] or {}) do
+            addButtonRow(itemsPage, rarity .. ": " .. name, nil, function()
+                fire(gSpins, "BuyWithSpins", name)
+            end)
+        end
+    end
+end
+
+addTitle(itemsPage, "Equip grimoire (storage slot)")
+for slot = 1, Config.GrimoireStorageSlots do
+    addButtonRow(itemsPage, "Use slot " .. slot, spinsReason, function()
+        fire(spins, Config.GrimoireStorageUseAction, slot)
+    end)
+end
+
+addTitle(itemsPage, "Shop (spin packs, Yens)")
+local packButtons = {}
+local scanButton
+local function scanPacks()
+    for _, old in ipairs(packButtons) do old:Destroy() end
+    table.clear(packButtons)
+    local amounts, seen = {}, {}
+    local playerGui = LocalPlayer:FindFirstChildOfClass("PlayerGui")
+    local prefix = Config.YenPackButtonPrefix
+    if playerGui then
+        for _, inst in ipairs(playerGui:GetDescendants()) do
+            if inst:IsA("GuiButton") and string.sub(inst.Name, 1, #prefix) == prefix then
+                local amount = tonumber(inst:GetAttribute(Config.YenPackAmountAttribute))
+                if amount and amount > 0 and not seen[amount] then
+                    seen[amount] = true
+                    table.insert(amounts, math.floor(amount))
+                end
+            end
+        end
+    end
+    table.sort(amounts)
+    if #amounts == 0 then
+        local none = addButtonRow(itemsPage, "No packs found: open the spin menu, then scan again", "")
+        none.LayoutOrder = scanButton.LayoutOrder
+        table.insert(packButtons, none)
+        return
+    end
+    for _, amount in ipairs(amounts) do
+        local b = addButtonRow(itemsPage, "Buy " .. amount .. " spins (Yens)", nil, function()
+            fire(gSpins, "BuySpinsWithYens", amount)
+        end)
+        b.LayoutOrder = scanButton.LayoutOrder
+        table.insert(packButtons, b)
+    end
+end
+scanButton = addButtonRow(itemsPage, "Scan Yen packs", gSpinsReason, scanPacks)
+
+end -- scope
+do -- scope: keeps top-level locals under the 200 limit
+----------------------------------------------------------------------
+-- Character (live status, refreshes twice a second while visible)
+----------------------------------------------------------------------
+local charPage = pages.Character
+addTitle(charPage, "Character status")
+local charLines = {}
+for _, key in ipairs({ "Player", "Character", "Health", "Speed", "Root", "Level", "Points" }) do
+    local l = makeLabel(charPage, "", 13, C.text, false)
+    l.LayoutOrder = nextOrder(charPage)
+    l.Size = UDim2.new(1, 0, 0, 22)
+    charLines[key] = l
+end
+
+local function setLine(key, text, color)
+    charLines[key].Text = text
+    charLines[key].TextColor3 = color or C.text
+end
+
+refreshCharacter = function()
+    local char = LocalPlayer.Character
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    setLine("Player", "Player: " .. LocalPlayer.Name)
+    setLine("Character", "Character: " .. (char and "Loaded" or "Not loaded"), char and C.green or C.muted)
+    setLine("Health", "Health: " .. (hum and (math.floor(hum.Health) .. " / " .. math.floor(hum.MaxHealth)) or "Unavailable"))
+    setLine("Speed", "Move speed: " .. (hum and tostring(math.floor(hum.WalkSpeed)) or "Unavailable"))
+    setLine("Root", "Root part: " .. (hrp and "Available" or "Unavailable"), hrp and C.green or C.muted)
+    local level = LocalPlayer:GetAttribute(Config.PlayerLevelAttribute)
+    local points = LocalPlayer:GetAttribute(Config.PointsAttribute)
+    setLine("Level", "Level: " .. (level ~= nil and tostring(level) or "Unavailable"))
+    setLine("Points", "Stat points: " .. (points ~= nil and tostring(points) or "Unavailable"))
+end
+addButtonRow(charPage, "Refresh status", nil, function() refreshCharacter() end)
+
+task.spawn(function()
+    while alive and gui.Parent do
+        if currentPage == "Character" then
+            pcall(refreshCharacter)
+        end
+        task.wait(0.5)
+    end
+end)
+
+end -- scope
+do -- scope: keeps top-level locals under the 200 limit
+----------------------------------------------------------------------
+-- Tools: potion shop, selling, codes, session
+----------------------------------------------------------------------
+local toolsPage = pages.Tools
+addTitle(toolsPage, "Potion shop")
+addActionRow(toolsPage, "Go to potion shop", "Flies to the Item Seller and opens the shop prompt",
+    function() goToPotionShop(true) end)
+addCycleRow(toolsPage, "Buy potion", shopLabels(),
+    function() return Options.BuyPotion end,
+    function(i) Options.BuyPotion = i end)
+addStepper(toolsPage, "Buy amount", "PotionBuyCount", 1, 50, 1, "%d")
+addActionRow(toolsPage, "Buy potions", "Buys the amount above with Yens", buyPotions, itemShopGate)
+
+addTitle(toolsPage, "Sell items")
+addCycleRow(toolsPage, "Sell up to rarity", Config.SellRarities,
+    function() return Options.SellMaxRarity end,
+    function(i) Options.SellMaxRarity = i end)
+addActionRow(toolsPage, "Sell now", "Skips bound, limited, grimoires, consumables and held tools", sellNow, inventoryGate)
+
+addTitle(toolsPage, "Codes")
+addNote(toolsPage, "The dump has no list of valid codes. Paste yours, one per line. Codes need group " .. Config.CodesGroupId .. " membership.", C.muted)
+addTextBoxRow(toolsPage, "One code per line",
+    function() return Options.CodesText end,
+    function(text) Options.CodesText = text end, 110)
+addActionRow(toolsPage, "Redeem all codes", "Sends each code, at most " .. Config.CodesWrongPerMinute .. " per minute", redeemAllCodes, codesGate)
+
+addTitle(toolsPage, "Session")
+addActionRow(toolsPage, "Reset character", "Sets your Humanoid health to 0", resetCharacter)
+addActionRow(toolsPage, "Rejoin server", "Teleports you back into this server", rejoinServer)
+
+addTitle(toolsPage, "Grimoire awakening")
+addNote(toolsPage, "Not built: the dump has no awakening remote. The only awakening code is the tutorial scene (Awakening Day), where the server sets CurrentGrimoire. Send me the tower prompt name or the remote you see in a remote spy and I will wire it.", C.muted)
+
+end -- scope
+do -- scope: keeps top-level locals under the 200 limit
+----------------------------------------------------------------------
+-- Log: activity feed and error panel
+----------------------------------------------------------------------
+local logPage = pages.Log
+addTitle(logPage, "Activity log")
+local logSummary = addNote(logPage, "", C.muted)
+local logErrorsOnly = false
+addButtonRow(logPage, "Showing: all entries (tap for errors only)", nil, function(b)
+    logErrorsOnly = not logErrorsOnly
+    b.Text = logErrorsOnly and "Showing: errors only (tap for all)" or "Showing: all entries (tap for errors only)"
+    renderLog()
+end)
+addButtonRow(logPage, "Clear log", nil, function()
+    table.clear(Log.entries)
+    table.clear(Log.errors)
+    renderLog()
+end)
+addButtonRow(logPage, "Copy log to clipboard", nil, function()
+    if type(setclipboard) ~= "function" then
+        logEvent("error", "setclipboard is not available in this executor")
+        return
+    end
+    local lines = {}
+    for _, e in ipairs(Log.entries) do
+        table.insert(lines, string.format("[%s] %s: %s", e.time, e.level, e.text))
+    end
+    pcall(setclipboard, table.concat(lines, "\n"))
+end)
+local logHolder = Instance.new("Frame")
+logHolder.LayoutOrder = nextOrder(logPage)
+logHolder.Size = UDim2.new(1, 0, 0, 0)
+logHolder.AutomaticSize = Enum.AutomaticSize.Y
+logHolder.BackgroundTransparency = 1
+logHolder.Parent = logPage
+do
+    local layout = Instance.new("UIListLayout")
+    layout.Padding = UDim.new(0, 3)
+    layout.SortOrder = Enum.SortOrder.LayoutOrder
+    layout.Parent = logHolder
+end
+
+local function updateErrorViews()
+    local count = #Log.errors
+    errorLabel.Text = "Errors: " .. count .. (count > 0 and " (see the Log tab)" or "")
+    errorLabel.TextColor3 = count > 0 and C.red or C.green
+end
+
+renderLog = function()
+    for _, child in ipairs(logHolder:GetChildren()) do
+        if child:IsA("TextLabel") then
+            child:Destroy()
+        end
+    end
+    local list = logErrorsOnly and Log.errors or Log.entries
+    logSummary.Text = string.format("%d entries, %d errors", #Log.entries, #Log.errors)
+    local shown = 0
+    for i = #list, 1, -1 do
+        shown = shown + 1
+        if shown > 80 then
+            break
+        end
+        local e = list[i]
+        local l = makeLabel(logHolder, string.format("[%s] %s", e.time, e.text), 11,
+            e.level == "error" and C.red or C.muted, false)
+        l.LayoutOrder = shown
+        l.Size = UDim2.new(1, 0, 0, 0)
+        l.AutomaticSize = Enum.AutomaticSize.Y
+        l.TextYAlignment = Enum.TextYAlignment.Top
+    end
+    updateErrorViews()
+end
+
+local logDirty = false
+Log.onChange = function(entry)
+    logDirty = true
+    if entry.level == "error" then
+        updateErrorViews()
+    end
+end
+task.spawn(function()
+    while alive and gui.Parent do
+        if logDirty and currentPage == "Log" then
+            logDirty = false
+            pcall(renderLog)
+        end
+        task.wait(0.5)
+    end
+end)
+
+end -- scope
+do -- scope: keeps top-level locals under the 200 limit
+----------------------------------------------------------------------
+-- Settings
+----------------------------------------------------------------------
+local settingsPage = pages.Settings
+
+-- Presets: State (except Black Screen), Options and Tune as JSON.
+local function deepCopy(value)
+    if type(value) ~= "table" then
+        return value
+    end
+    local out = {}
+    for k, v in pairs(value) do
+        out[k] = deepCopy(v)
+    end
+    return out
+end
+
+local function snapshot()
+    local st = {}
+    for k, v in pairs(State) do
+        if k ~= "BlackScreen" then
+            st[k] = v
+        end
+    end
+    return { state = st, options = deepCopy(Options), tune = deepCopy(Tune) }
+end
+local defaultSnapshot = snapshot()
+
+local function clampIndex(value, count)
+    return math.clamp(math.floor(tonumber(value) or 1), 1, count)
+end
+
+local function okNumber(v)
+    return type(v) == "number" and v == v and math.abs(v) < 1e7
+end
+
+local function applySnapshot(snap)
+    if type(snap) ~= "table" then
+        return false
+    end
+    if type(snap.state) == "table" then
+        for k, v in pairs(snap.state) do
+            if State[k] ~= nil and type(v) == "boolean" and k ~= "BlackScreen" then
+                State[k] = v
+            end
+        end
+    end
+    if type(snap.tune) == "table" then
+        for k, v in pairs(snap.tune) do
+            if Tune[k] ~= nil and okNumber(v) then
+                Tune[k] = v
+            end
+        end
+    end
+    if type(snap.options) == "table" then
+        for k, v in pairs(snap.options) do
+            if k == "SkillKeys" and type(v) == "table" then
+                for key, on in pairs(v) do
+                    if Options.SkillKeys[key] ~= nil and type(on) == "boolean" then
+                        Options.SkillKeys[key] = on
+                    end
+                end
+            elseif Options[k] ~= nil and type(v) == type(Options[k]) and (type(v) ~= "number" or okNumber(v)) then
+                Options[k] = v
+            end
+        end
+    end
+    for key, range in pairs(StepperRanges) do
+        if Tune[key] ~= nil then
+            Tune[key] = math.clamp(Tune[key], range[1], range[2])
+        end
+    end
+    Options.FarmMode = clampIndex(Options.FarmMode, #FarmModeNames)
+    Options.StatMode = clampIndex(Options.StatMode, #Config.StatKeys + 1)
+    Options.HpPotion = clampIndex(Options.HpPotion, #Config.Potions.Health)
+    Options.MpPotion = clampIndex(Options.MpPotion, #Config.Potions.Mana)
+    Options.BuyPotion = clampIndex(Options.BuyPotion, #Config.Potions.Health + #Config.Potions.Mana)
+    Options.SellMaxRarity = clampIndex(Options.SellMaxRarity, #Config.SellRarities)
+    Options.DungeonId = clampIndex(Options.DungeonId, #Config.DungeonIds)
+    Options.DungeonMode = clampIndex(Options.DungeonMode, #Config.DungeonModes)
+    Options.CodesText = tostring(Options.CodesText)
+    return true
+end
+
+local function savePreset(slot)
+    Store.data.presets[tostring(slot)] = snapshot()
+    saveStore()
+    logEvent("info", "saved preset " .. slot)
+    notify(SCRIPT_NAME, "Saved preset " .. slot)
+end
+
+local function loadPreset(slot)
+    if not applySnapshot(Store.data.presets[tostring(slot)]) then
+        logEvent("error", "preset " .. slot .. " is empty")
+        return
+    end
+    logEvent("info", "loaded preset " .. slot)
+    notify(SCRIPT_NAME, "Loaded preset " .. slot)
+    if currentPage then selectPage(currentPage) end
+end
+
+addTitle(settingsPage, "Interface")
+addToggle(settingsPage, "Animation", "Smooth UI transitions and the loading screen",
+    function() return UIPrefs.Animate end,
+    function(v)
+        UIPrefs.Animate = v
+        saveStore()
+    end)
+local function setCompact(v)
+    UIPrefs.Compact = v
+    applyLayout()
+    saveStore()
+end
+addToggle(settingsPage, "Compact sidebar", "Collapse navigation width",
+    function() return UIPrefs.Compact end, setCompact)
+addStepper(settingsPage, "UI scale", "Scale", 0.6, 1.5, 0.1, "%.1f", UIPrefs, function()
+    fit()
+    saveStore()
+end)
+addToggle(settingsPage, "Roblox notifications", "Pop-ups when the script loads or finishes a job",
+    function() return Prefs.Notify end,
+    function(v)
+        Prefs.Notify = v
+        saveStore()
+    end)
+addTitle(settingsPage, "Safety")
+addStateToggle(settingsPage, "Anti-AFK", "Sends a click when Roblox flags you idle", "AntiAfk", function()
+    if VirtualUser == nil then return "VirtualUser unavailable in this executor" end
+end)
+addStateToggle(settingsPage, "Humanize timing", "Random jitter on intervals", "Humanize")
+addTitle(settingsPage, "Presets")
+for slot = 1, 3 do
+    addPairRow(settingsPage, "Preset " .. slot, "Save", function() savePreset(slot) end,
+        "Load", function() loadPreset(slot) end)
+end
+addButtonRow(settingsPage, "Reset all settings to defaults", nil, function()
+    applySnapshot(defaultSnapshot)
+    logEvent("info", "settings reset to defaults")
+    if currentPage then selectPage(currentPage) end
+end)
+addNote(settingsPage, "Presets and favorites save to " .. Store.file .. " when the executor allows files, otherwise they last until you unload.", C.muted)
+
+collapseButton.MouseButton1Click:Connect(function()
+    setCompact(not UIPrefs.Compact)
+    if currentPage then selectPage(currentPage) end
+end)
+
+end -- scope
+do -- scope: keeps top-level locals under the 200 limit
+----------------------------------------------------------------------
+-- About + unload
+----------------------------------------------------------------------
+local function unload()
+    alive = false
+    for key in pairs(State) do State[key] = false end
+    aimHeld = false
+    Mover.goal = nil
+    restoreCollision()
+    setBlackScreen(false)
+    local _, _, hum = localChar()
+    if hum and originalWalkSpeed ~= nil then hum.WalkSpeed = originalWalkSpeed end
+    for _, conn in ipairs(connections) do conn:Disconnect() end
+    clearEsp()
+    Activity.tripBusy = false
+    Log.onChange = nil
+    notify(SCRIPT_NAME, "Unloaded")
+    gui:Destroy()
+end
+
+local aboutPage = pages.About
+addTitle(aboutPage, SCRIPT_NAME)
+addNote(aboutPage, "PUNPUN Premium interface, responsive and draggable.", C.text)
+addNote(aboutPage, "Not run in-game yet. Gated features show the missing remote or value instead of failing silently.", C.muted)
+addButtonRow(aboutPage, "Unload " .. SCRIPT_NAME, nil, unload, C.redDark)
+closeButton.MouseButton1Click:Connect(unload)
+
+end -- scope
+----------------------------------------------------------------------
+-- Start
+----------------------------------------------------------------------
+local function playSplash()
+    if not UIPrefs.Animate then
+        return
+    end
+    local splash = Instance.new("Frame")
+    splash.Name = "Splash"
+    splash.AnchorPoint = Vector2.new(0.5, 0.5)
+    splash.Position = UDim2.fromScale(0.5, 0.5)
+    splash.Size = UDim2.fromOffset(280, 160)
+    splash.BackgroundColor3 = C.bg
+    splash.BorderSizePixel = 0
+    splash.Parent = gui
+    corner(splash, 12)
+    stroke(splash, C.red, 1.5)
+
+    local title = makeLabel(splash, "PUNPUN  /  GRIMOIRES", 16, C.red, true)
+    title.TextXAlignment = Enum.TextXAlignment.Center
+    title.Position = UDim2.fromOffset(0, 14)
+    title.Size = UDim2.new(1, 0, 0, 24)
+
+    local dots = {}
+    for i = 1, 8 do
+        local angle = (i - 1) / 8 * math.pi * 2
+        local dot = Instance.new("Frame")
+        dot.AnchorPoint = Vector2.new(0.5, 0.5)
+        dot.Size = UDim2.fromOffset(8, 8)
+        dot.Position = UDim2.new(0.5, math.cos(angle) * 20, 0, 78 + math.sin(angle) * 20)
+        dot.BackgroundColor3 = C.red
+        dot.BorderSizePixel = 0
+        dot.Parent = splash
+        corner(dot, 4)
+        dots[i] = dot
+    end
+
+    local statusText = makeLabel(splash, "Loading modules...", 12, C.muted, false)
+    statusText.TextXAlignment = Enum.TextXAlignment.Center
+    statusText.Position = UDim2.fromOffset(0, 112)
+    statusText.Size = UDim2.new(1, 0, 0, 18)
+
+    local barTrack = Instance.new("Frame")
+    barTrack.Size = UDim2.fromOffset(220, 6)
+    barTrack.Position = UDim2.new(0.5, -110, 0, 138)
+    barTrack.BackgroundColor3 = C.panel2
+    barTrack.BorderSizePixel = 0
+    barTrack.Parent = splash
+    corner(barTrack, 3)
+    local fill = Instance.new("Frame")
+    fill.Size = UDim2.fromScale(0, 1)
+    fill.BackgroundColor3 = C.red
+    fill.BorderSizePixel = 0
+    fill.Parent = barTrack
+    corner(fill, 3)
+    tween(fill, { Size = UDim2.fromScale(1, 1) }, 1.5)
+
+    local messages = { "Loading modules...", "Reading the dump values...", "Building the menu...", "Ready" }
+    for frame = 1, 20 do
+        if not alive then
+            break
+        end
+        for i, dot in ipairs(dots) do
+            dot.BackgroundTransparency = ((frame - i) % 8) / 8
+        end
+        statusText.Text = messages[math.min(#messages, 1 + math.floor((frame - 1) / 5))]
+        task.wait(0.08)
+    end
+    splash:Destroy()
+end
+
+fit()
+local camera = Workspace.CurrentCamera
+if camera then
+    track(camera:GetPropertyChangedSignal("ViewportSize"):Connect(fit))
+end
+selectPage("Dashboard")
+root.Visible = false
+task.spawn(function()
+    pcall(playSplash)
+    local leftover = gui:FindFirstChild("Splash")
+    if leftover then
+        leftover:Destroy()
+    end
+    if alive then
+        root.Visible = true
+        logEvent("info", "loaded")
+        notify(SCRIPT_NAME, "Loaded. The menu is ready.")
+    end
+end)
